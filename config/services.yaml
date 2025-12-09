@@ -1,0 +1,34 @@
+services:
+  - name: "aws-ecs-web"
+    type: "json"
+    description: "AWS ECS application logs in JSON format"
+    # Using specific patterns for date handling in code
+    path_pattern: "var_log/syslog/{YYYY}/{MM}/{DD}/application_logs/web-server/**/*.log"
+    path_date_formats: ["{YYYY}", "{MM}", "{DD}"] 
+    insight_rules:
+      - patterns: ["Connection refused", "503", "timeout"]
+        recommendation: "Check Load Balancer health and Database connection pool."
+        severity: "high"
+      - patterns: ["AuthFailure", "403"]
+        recommendation: "Verify IAM roles and Security Group rules."
+        severity: "medium"
+  
+  - name: "pylons-app"
+    type: "syslog"
+    description: "Pylons web server logs in Syslog format"
+    path_pattern: "var_log/ecs/{YYYY}/{MM}/{DD}/web-server.log"
+    path_date_formats: ["{YYYY}", "{MM}", "{DD}"]
+    insight_rules:
+      - patterns: ["MemoryError", "OOM"]
+        recommendation: "Check JVM/Python memory limits and scaling sizing."
+        severity: "critical"
+
+  - name: "aws-ses"
+    type: "json"
+    description: "AWS SES mail logs in JSON format"
+    path_pattern: "var_log/ses/{YYYY}/{MM}/{DD}/SES/**/*.log"
+    path_date_formats: ["{YYYY}", "{MM}", "{DD}"]
+    insight_rules:
+      - patterns: ["Bounce", "Complaint"]
+        recommendation: "Check suppression list and email content quality."
+        severity: "low"

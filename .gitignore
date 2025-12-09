@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / Packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Dependency Management
+# We commit uv.lock for reproducible builds
+# uv.lock
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project Specific
+# generated logs
+var_log/
+/logs/
+/insights/
+
+# Temporary
+.last_session
+.DS_Store
