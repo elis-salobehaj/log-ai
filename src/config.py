@@ -33,63 +33,113 @@ def load_config(config_path: str = None) -> AppConfig:
     
     return AppConfig(**data)
 
-def expand_pattern(pattern: str, date: datetime = None) -> str:
+def expand_pattern(pattern: str, date: datetime = None, hour: int = None) -> str:
     """
-    Expands {YYYY}, {MM}, {DD} placeholders in the pattern.
+    Expands {YYYY}, {MM}, {DD}, {HH} placeholders in the pattern.
     If no date is provided, defaults to today.
-    Note: For globbing multiple dates, we might want to replace with '*' 
-    but for now let's assume we look for specific dates or use wildcards in the config.
+    If no hour is provided, uses wildcard to match all hours.
     """
     if date is None:
         date = datetime.now()
+    
+    # For hour, if not specified, use wildcard to match all hours of the day
+    hour_str = f"{hour:02d}" if hour is not None else "*"
     
     return pattern.format(
         YYYY=date.strftime("%Y"),
         MM=date.strftime("%m"),
         DD=date.strftime("%d"),
+        HH=hour_str,
         guid="*", # Handle guid placeholder as wildcard if present
     )
 
-def find_log_files(service: ServiceConfig, days_back: int = 1) -> List[str]:
+def find_log_files(service: ServiceConfig, hours_back: int = None, specific_date: str = None, start_hour: int = None, end_hour: int = None) -> List[str]:
     """
-    Finds log files matching the service pattern for the last N days.
-    Avoids expensive full scans by effectively constructing the path for each day.
+    Finds log files matching the service pattern.
+    
+    Args:
+        service: Service configuration
+        hours_back: Number of hours to search back from now
+        specific_date: Specific date in YYYY-MM-DD format (searches all 24 hours)
+        start_hour: Start hour (0-23) when combined with specific_date for time range
+        end_hour: End hour (0-23) when combined with specific_date for time range
+    
+    Time range examples:
+        - hours_back=2: Last 2 hours from now
+        - specific_date="2025-12-14": All of Dec 14, 2025 (00:00-23:59)
+        - specific_date="2025-12-14", start_hour=14, end_hour=16: Dec 14, 2-4pm
+    
+    Avoids expensive full scans by constructing precise paths.
     """
     files = []
-    # If no date formats specified, falling back to glob all is dangerous for 300GB, 
-    # but for POC we might have to if schema isn't robust.
-    # We added 'path_date_formats' to config.
-    
     project_root = Path(__file__).parent.parent
-    
-    # Calculate dates to check
-    dates_to_check = []
-    for i in range(days_back):
-        dates_to_check.append(datetime.now() - datetime.timedelta(days=i))
     
     # If config doesn't use placeholders, just return the glob (maybe it's a flat file)
     if "{YYYY}" not in service.path_pattern and "{MM}" not in service.path_pattern:
-         # Check if absolute or relative
         p = Path(service.path_pattern)
         if not p.is_absolute():
             p = project_root / p
         return glob.glob(str(p), recursive=True)
 
-    for date in dates_to_check:
-        # Construct specific pattern for this date
-        pattern = service.path_pattern.replace("{YYYY}", date.strftime("%Y")) \
-                                      .replace("{MM}", date.strftime("%m")) \
-                                      .replace("{DD}", date.strftime("%d")) \
-                                      .replace("{guid}", "*") # Keep guid as wildcard
+    # Generate times to check: either specific date with time range, or hours back
+    times_to_check = []
+    if specific_date:
+        # Search a specific date (YYYY-MM-DD format)
+        try:
+            target_date = datetime.strptime(specific_date, "%Y-%m-%d")
+            
+            # If start_hour and end_hour specified, search specific hour range
+            if start_hour is not None and end_hour is not None:
+                # Search each hour in the range (inclusive)
+                for hour in range(start_hour, end_hour + 1):
+                    hour_dt = target_date.replace(hour=hour)
+                    times_to_check.append((hour_dt, True))  # True = specific hour
+            else:
+                # Search all hours of that day
+                times_to_check.append((target_date, False))  # False = all hours
+        except ValueError:
+            sys.stderr.write(f"[ERROR] Invalid specific_date format: {specific_date}, expected YYYY-MM-DD\n")
+            return []
+    elif hours_back is not None and hours_back > 0:
+        # Search specific hours back from now
+        now = datetime.now()
+        for i in range(hours_back):
+            times_to_check.append((now - timedelta(hours=i), True))  # True = specific hour
+    else:
+        # Default: search today only
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        times_to_check.append((today, False))  # False = all hours
+
+    for date, specific_hour in times_to_check:
+        # Construct pattern for this time period
+        if specific_hour:
+            # Search only current hour: replace HH with specific hour
+            hour_str = date.strftime("%H")
+            pattern = service.path_pattern.replace("{YYYY}", date.strftime("%Y")) \
+                                          .replace("{MM}", date.strftime("%m")) \
+                                          .replace("{DD}", date.strftime("%d")) \
+                                          .replace("{HH}", hour_str) \
+                                          .replace("{guid}", "*")
+        else:
+            # Search all hours of this day: use wildcard for HH
+            pattern = service.path_pattern.replace("{YYYY}", date.strftime("%Y")) \
+                                          .replace("{MM}", date.strftime("%m")) \
+                                          .replace("{DD}", date.strftime("%d")) \
+                                          .replace("{HH}", "*") \
+                                          .replace("{guid}", "*")
         
         # Resolve path
         p = Path(pattern)
         if not p.is_absolute():
             p = project_root / p
             
-        # Glob just this specific day
-        # print(f"DEBUG: Globbing {str(p)}", file=sys.stderr)
+        # Glob just this time period
+        import sys
+        sys.stderr.write(f"[DEBUG] Globbing {str(p)}\n")
+        sys.stderr.flush()
         day_files = glob.glob(str(p), recursive=True)
+        sys.stderr.write(f"[DEBUG] Found {len(day_files)} files\n")
+        sys.stderr.flush()
         files.extend(day_files)
         
     return files
