@@ -1,9 +1,11 @@
 """
 Configuration loader for log-ai MCP server.
-Loads settings from environment variables with sensible defaults.
+Loads settings from config/.env file.
 """
 import os
+from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
 
 
 class Config:
@@ -51,48 +53,80 @@ class Config:
     DD_SITE: str
     
     def __init__(self):
-        """Load configuration from environment variables with defaults"""
+        """Load configuration from config/.env file"""
         
-        # Redis Configuration
-        self.REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-        self.REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
-        self.REDIS_DB = int(os.environ.get("REDIS_DB", "0"))
-        self.REDIS_MAX_MEMORY = os.environ.get("REDIS_MAX_MEMORY", "500mb")
-        self.REDIS_PERSISTENCE = os.environ.get("REDIS_PERSISTENCE", "false").lower() in ("true", "1", "yes")
-        self.REDIS_ENABLED = os.environ.get("REDIS_ENABLED", "true").lower() in ("true", "1", "yes")
+        # Locate the .env file (should be in config/ relative to project root)
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent  # Go up from src/ to project root
+        env_file = project_root / "config" / ".env"
         
-        # Global Concurrency Limits
-        self.MAX_GLOBAL_SEARCHES = int(os.environ.get("MAX_GLOBAL_SEARCHES", "20"))
-        self.MAX_PARALLEL_SEARCHES_PER_CALL = int(os.environ.get("MAX_PARALLEL_SEARCHES_PER_CALL", "5"))
+        if not env_file.exists():
+            raise FileNotFoundError(
+                f"Configuration file not found: {env_file}\n"
+                f"Please create config/.env file with required settings."
+            )
         
-        # Cache Configuration
-        self.CACHE_MAX_SIZE_MB = int(os.environ.get("CACHE_MAX_SIZE_MB", "500"))
-        self.CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "100"))
-        self.CACHE_TTL_MINUTES = int(os.environ.get("CACHE_TTL_MINUTES", "10"))
+        # Load environment variables from .env file
+        load_dotenv(env_file)
         
-        # Search Limits
-        self.AUTO_CANCEL_TIMEOUT_SECONDS = int(os.environ.get("AUTO_CANCEL_TIMEOUT_SECONDS", "300"))
-        self.MAX_IN_MEMORY_MATCHES = int(os.environ.get("MAX_IN_MEMORY_MATCHES", "1000"))
+        # Redis Configuration - Required
+        self.REDIS_HOST = self._get_required("REDIS_HOST")
+        self.REDIS_PORT = int(self._get_required("REDIS_PORT"))
+        self.REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD")  # Optional
+        self.REDIS_DB = int(self._get_required("REDIS_DB"))
+        self.REDIS_MAX_MEMORY = self._get_required("REDIS_MAX_MEMORY")
+        self.REDIS_PERSISTENCE = self._get_bool("REDIS_PERSISTENCE")
+        self.REDIS_ENABLED = self._get_bool("REDIS_ENABLED")
+        self.REDIS_RETRY_DELAY = float(self._get_required("REDIS_RETRY_DELAY"))
+        self.REDIS_MAX_RETRIES = int(self._get_required("REDIS_MAX_RETRIES"))
         
-        # File Output
-        self.FILE_RETENTION_HOURS = int(os.environ.get("FILE_RETENTION_HOURS", "24"))
-        self.CLEANUP_INTERVAL_HOURS = int(os.environ.get("CLEANUP_INTERVAL_HOURS", "1"))
+        # Global Concurrency Limits - Required
+        self.MAX_GLOBAL_SEARCHES = int(self._get_required("MAX_GLOBAL_SEARCHES"))
+        self.MAX_PARALLEL_SEARCHES_PER_CALL = int(self._get_required("MAX_PARALLEL_SEARCHES_PER_CALL"))
         
-        # Logging
-        self.LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
-        self.LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
+        # Cache Configuration - Required
+        self.CACHE_MAX_SIZE_MB = int(self._get_required("CACHE_MAX_SIZE_MB"))
+        self.CACHE_MAX_ENTRIES = int(self._get_required("CACHE_MAX_ENTRIES"))
+        self.CACHE_TTL_MINUTES = int(self._get_required("CACHE_TTL_MINUTES"))
         
-        # Sentry Configuration (Chunk 2)
+        # Search Limits - Required
+        self.AUTO_CANCEL_TIMEOUT_SECONDS = int(self._get_required("AUTO_CANCEL_TIMEOUT_SECONDS"))
+        self.PREVIEW_MATCHES_LIMIT = int(self._get_required("PREVIEW_MATCHES_LIMIT"))
+        
+        # File Output - Required
+        self.FILE_OUTPUT_DIR = self._get_required("FILE_OUTPUT_DIR")
+        self.FILE_RETENTION_HOURS = int(self._get_required("FILE_RETENTION_HOURS"))
+        self.CLEANUP_INTERVAL_HOURS = int(self._get_required("CLEANUP_INTERVAL_HOURS"))
+        
+        # Logging - Required
+        self.LOG_LEVEL = self._get_required("LOG_LEVEL")
+        self.LOG_FORMAT = self._get_required("LOG_FORMAT")
+        
+        # Sentry Configuration - Optional
         self.SENTRY_DSN = os.environ.get("SENTRY_DSN")
         self.SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
         self.SENTRY_PROFILES_SAMPLE_RATE = float(os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "0.1"))
         self.SENTRY_ALERT_TEAMS_WEBHOOK = os.environ.get("SENTRY_ALERT_TEAMS_WEBHOOK")
         self.SENTRY_ALERT_SLACK_WEBHOOK = os.environ.get("SENTRY_ALERT_SLACK_WEBHOOK")
         
-        # Datadog Configuration (Chunk 3)
+        # Datadog Configuration - Optional
         self.DD_API_KEY = os.environ.get("DD_API_KEY")
         self.DD_APP_KEY = os.environ.get("DD_APP_KEY")
         self.DD_SITE = os.environ.get("DD_SITE", "datadoghq.com")
+    
+    def _get_required(self, key: str) -> str:
+        """Get a required environment variable, raise error if missing"""
+        value = os.environ.get(key)
+        if value is None or value == "":
+            raise ValueError(
+                f"Required configuration '{key}' is missing in config/.env file"
+            )
+        return value
+    
+    def _get_bool(self, key: str) -> bool:
+        """Get a boolean environment variable, raise error if missing"""
+        value = self._get_required(key)
+        return value.lower() in ("true", "1", "yes")
     
     def __repr__(self) -> str:
         """String representation (hide sensitive values)"""

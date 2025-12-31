@@ -20,34 +20,46 @@ from mcp.server.stdio import stdio_server
 import mcp.types as types
 
 from config import load_config, find_log_files, AppConfig
+from config_loader import get_config
+from redis_coordinator import (
+    RedisCoordinator,
+    RedisSemaphore,
+    RedisCache,
+    RedisMetrics
+)
 
 # =============================================================================
-# CONFIGURATION CONSTANTS - Adjust these as needed
+# CONFIGURATION - Load from environment variables
 # =============================================================================
+
+# Load configuration
+config = get_config()
 
 # Cache settings
-CACHE_MAX_SIZE_MB = 500
-CACHE_MAX_ENTRIES = 100
-CACHE_TTL_MINUTES = 10
+CACHE_MAX_SIZE_MB = config.CACHE_MAX_SIZE_MB
+CACHE_MAX_ENTRIES = config.CACHE_MAX_ENTRIES
+CACHE_TTL_MINUTES = config.CACHE_TTL_MINUTES
 
 # Concurrency limits
-MAX_PARALLEL_SEARCHES_PER_CALL = 5
-MAX_GLOBAL_SEARCHES = 10
+MAX_PARALLEL_SEARCHES_PER_CALL = config.MAX_PARALLEL_SEARCHES_PER_CALL
+MAX_GLOBAL_SEARCHES = config.MAX_GLOBAL_SEARCHES
 
 # Search limits
-AUTO_CANCEL_TIMEOUT_SECONDS = 300  # 5 minutes
-MAX_IN_MEMORY_MATCHES = 1000
+AUTO_CANCEL_TIMEOUT_SECONDS = config.AUTO_CANCEL_TIMEOUT_SECONDS
+PREVIEW_MATCHES_LIMIT = config.PREVIEW_MATCHES_LIMIT
 
 # File output
-FILE_OUTPUT_DIR = Path("/tmp/log-ai")
-CLEANUP_INTERVAL_HOURS = 1
-FILE_RETENTION_HOURS = 24
+FILE_OUTPUT_DIR = Path(config.FILE_OUTPUT_DIR)
+CLEANUP_INTERVAL_HOURS = config.CLEANUP_INTERVAL_HOURS
+FILE_RETENTION_HOURS = config.FILE_RETENTION_HOURS
 
 # Logging
-# Create unique session ID based on SSH connection or process
-SESSION_ID = os.environ.get("SSH_CONNECTION", "").replace(" ", "_").replace(".", "-") or f"pid-{os.getpid()}"
-if not SESSION_ID or SESSION_ID == "":
-    SESSION_ID = f"session-{os.getpid()}-{int(time.time())}"
+# Create unique session ID: random alphanumeric + timestamp
+import random
+import string
+random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+timestamp = datetime.now().strftime("%Y-%m-%d")
+SESSION_ID = f"{random_id}-{timestamp}"
 LOG_DIR = Path(f"/tmp/log-ai/{SESSION_ID}")
 LOG_FILE = LOG_DIR / "mcp-server.log"
 
@@ -66,15 +78,18 @@ sys.stderr.write(f"[INIT] Session log directory: {LOG_DIR}\n")
 sys.stderr.flush()
 
 # Configure logging to both file and stderr
+log_level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.FileHandler(LOG_FILE),
         logging.StreamHandler(sys.stderr)
-    ]
+    ],
+    force=True  # Override any existing configuration
 )
 logger = logging.getLogger("log-ai")
+logger.info(f"Log level set to: {config.LOG_LEVEL}")
 
 # =============================================================================
 # Date parsing utilities
@@ -254,7 +269,93 @@ def parse_date_string(date_str: str) -> Optional[Tuple[datetime, datetime]]:
 # Check for ripgrep availability at startup
 HAS_RIPGREP = shutil.which("rg") is not None
 
-# Global semaphore for concurrency control
+# =============================================================================
+# REDIS COORDINATION - Global state management
+# =============================================================================
+
+# Redis coordinator (initialized on startup)
+redis_coordinator: Optional[RedisCoordinator] = None
+redis_connected: bool = False
+
+
+async def init_redis():
+    """Initialize Redis connection for distributed coordination"""
+    global redis_coordinator, redis_connected
+    
+    if not config.REDIS_ENABLED:
+        sys.stderr.write("[REDIS] Redis disabled via config\n")
+        return
+    
+    sys.stderr.write(f"[REDIS] Connecting to {config.REDIS_HOST}:{config.REDIS_PORT}...\n")
+    redis_coordinator = RedisCoordinator(
+        host=config.REDIS_HOST,
+        port=config.REDIS_PORT,
+        password=config.REDIS_PASSWORD,
+        db=config.REDIS_DB
+    )
+    
+    redis_connected = await redis_coordinator.connect()
+    if redis_connected:
+        sys.stderr.write("[REDIS] Connected successfully\n")
+    else:
+        sys.stderr.write("[REDIS] Failed to connect, will use local state\n")
+
+
+async def shutdown_redis():
+    """Close Redis connection on shutdown"""
+    global redis_coordinator
+    if redis_coordinator:
+        await redis_coordinator.close()
+        sys.stderr.write("[REDIS] Connection closed\n")
+
+
+def get_search_semaphore():
+    """
+    Get search semaphore - uses Redis if available, falls back to local asyncio.Semaphore.
+    Returns a context manager for 'async with' usage.
+    """
+    if redis_connected and redis_coordinator and redis_coordinator.redis:
+        return RedisSemaphore(
+            redis_coordinator.redis,
+            key_name="global_searches",
+            max_count=config.MAX_GLOBAL_SEARCHES,
+            retry_delay=config.REDIS_RETRY_DELAY,
+            max_retries=config.REDIS_MAX_RETRIES
+        )
+    else:
+        # Fallback to local semaphore
+        return asyncio.Semaphore(config.MAX_GLOBAL_SEARCHES)
+
+
+def get_search_cache():
+    """
+    Get search cache - uses Redis if available, falls back to local SearchCache.
+    Returns a cache object with get() and put() methods.
+    """
+    if redis_connected and redis_coordinator and redis_coordinator.redis:
+        return RedisCache(
+            redis_coordinator.redis,
+            ttl_seconds=config.CACHE_TTL_MINUTES * 60,
+            max_size_mb=config.CACHE_MAX_SIZE_MB
+        )
+    else:
+        # Fallback to local cache
+        return SearchCache()
+
+
+def get_metrics():
+    """
+    Get metrics tracker - uses Redis if available, falls back to no-op.
+    Returns a metrics object with increment_counter() and record_timing() methods.
+    """
+    if redis_connected and redis_coordinator and redis_coordinator.redis:
+        return RedisMetrics(redis_coordinator.redis)
+    else:
+        # Return no-op metrics (could implement local metrics later)
+        return None
+
+
+# Global semaphore for concurrency control (deprecated, use get_search_semaphore())
 global_search_semaphore = asyncio.Semaphore(MAX_GLOBAL_SEARCHES)
 
 # =============================================================================
@@ -386,7 +487,8 @@ class SearchCache:
         self.total_size_bytes = 0
 
 
-# Global cache instance
+# Global cache instance (kept for backward compatibility/fallback)
+# NOTE: Use get_search_cache() instead, which returns Redis cache if available
 search_cache = SearchCache()
 
 # =============================================================================
@@ -399,7 +501,7 @@ def ensure_output_dir():
 
 
 def generate_output_filename(services: List[str], is_partial: bool = False) -> Path:
-    """Generate filename for overflow results"""
+    """Generate filename for overflow results in session directory"""
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     services_str = "-".join(services)[:50]  # Limit length
     unique_id = str(uuid.uuid4())[:8]
@@ -407,18 +509,22 @@ def generate_output_filename(services: List[str], is_partial: bool = False) -> P
     prefix = "logai-partial" if is_partial else "logai-search"
     filename = f"{prefix}-{timestamp}-{services_str}-{unique_id}.json"
     
-    return FILE_OUTPUT_DIR / filename
+    # Store results in session directory for easy retrieval
+    return LOG_DIR / filename
 
 
 def save_matches_to_file(matches: List[Dict], filepath: Path) -> bool:
     """Save matches to JSON file"""
     try:
+        logger.debug(f"Saving {len(matches)} matches to {filepath}")
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(matches, f, indent=2)
         sys.stderr.write(f"[FILE] Saved {len(matches)} matches to {filepath}\n")
+        logger.info(f"Successfully saved {len(matches)} matches to {filepath}")
         return True
     except Exception as e:
         sys.stderr.write(f"[FILE] Error saving to {filepath}: {e}\n")
+        logger.error(f"Failed to save to {filepath}: {e}")
         return False
 
 
@@ -505,6 +611,18 @@ class ProgressTracker:
         sys.stderr.flush()
 
 
+def parse_json_content(content: str) -> Any:
+    """
+    Try to parse content as JSON. If successful, return parsed object.
+    If parsing fails, return original string.
+    """
+    try:
+        return json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON or invalid JSON, return as-is
+        return content
+
+
 async def stream_ripgrep_search(
     files: List[str],
     query: str,
@@ -539,10 +657,13 @@ async def stream_ripgrep_search(
                 # Parse ripgrep output: file:line:content
                 parts = line_str.split(':', 2)
                 if len(parts) >= 3:
+                    # Try to parse content as JSON
+                    parsed_content = parse_json_content(parts[2])
+                    
                     match = {
                         "file": parts[0],
                         "line": int(parts[1]) if parts[1].isdigit() else 0,
-                        "content": parts[2],
+                        "content": parsed_content,
                         "service": service_name
                     }
                     matches.append(match)
@@ -605,10 +726,13 @@ async def stream_grep_search(
                 # Parse grep output: file:line:content
                 parts = line_str.split(':', 2)
                 if len(parts) >= 3:
+                    # Try to parse content as JSON
+                    parsed_content = parse_json_content(parts[2])
+                    
                     match = {
                         "file": parts[0],
                         "line": int(parts[1]) if parts[1].isdigit() else 0,
-                        "content": parts[2],
+                        "content": parsed_content,
                         "service": service_name
                     }
                     matches.append(match)
@@ -652,6 +776,8 @@ async def search_single_service(
                 start_hour=time_range.get("start_hour"),
                 end_hour=time_range.get("end_hour")
             )
+        elif "minutes_back" in time_range:
+            files = find_log_files(target_service, minutes_back=time_range["minutes_back"])
         elif "hours_back" in time_range:
             files = find_log_files(target_service, hours_back=time_range["hours_back"])
         else:
@@ -693,7 +819,7 @@ def format_matches_text(matches: List[Dict], metadata: Dict) -> str:
         lines.append(f"⚠️  PARTIAL RESULTS (error occurred)")
     
     if metadata.get('overflow'):
-        lines.append(f"Showing: first 500 of {metadata['total_matches']}")
+        lines.append(f"Showing: first {len(matches)} of {metadata['total_matches']}")
     else:
         lines.append(f"Showing: {len(matches)}")
     
@@ -708,11 +834,13 @@ def format_matches_text(matches: List[Dict], metadata: Dict) -> str:
         content = match.get('content', '')
         lines.append(f"[{service}] {file}:{line_num} {content}")
     
-    # Footer if saved to file
+    # Show file location (always present now)
     if metadata.get('saved_to'):
         lines.append("")
-        lines.append("=== Full Results ===")
-        lines.append(f"Complete results saved to: {metadata['saved_to']}")
+        lines.append("=== Results File ===")
+        lines.append(f"All results saved to: {metadata['saved_to']}")
+        if metadata.get('overflow'):
+            lines.append(f"(Showing first {PREVIEW_MATCHES_LIMIT} of {metadata['total_matches']} matches above)")
         lines.append(f"Use read_search_file tool to retrieve full results")
     
     if metadata.get('error'):
@@ -731,36 +859,14 @@ def format_matches_json(matches: List[Dict], metadata: Dict) -> str:
     return json.dumps(result, indent=2)
 
 
-def format_insights_text(insights: List[Dict]) -> str:
-    """Format insights as human-readable text"""
-    if not insights:
-        return "No issues matched known patterns."
-    
-    lines = []
-    for insight in insights:
-        severity = insight['severity'].upper()
-        recommendation = insight['recommendation']
-        lines.append(f"[{severity}] {recommendation}")
-    
-    return "\n".join(lines)
-
-
-def format_insights_json(insights: List[Dict], matched_count: int) -> str:
-    """Format insights as JSON"""
-    result = {
-        "insights": insights,
-        "metadata": {
-            "matched_count": matched_count
-        }
-    }
-    return json.dumps(result, indent=2)
-
-
 # =============================================================================
 # MAIN SERVER
 # =============================================================================
 
 async def main():
+    # Initialize Redis (if enabled)
+    await init_redis()
+    
     # Ensure output directory exists
     ensure_output_dir()
     
@@ -775,6 +881,7 @@ async def main():
     sys.stderr.write(f"[SERVER] Output directory: {FILE_OUTPUT_DIR}\n")
     sys.stderr.write(f"[SERVER] Cache: {CACHE_MAX_ENTRIES} entries, {CACHE_MAX_SIZE_MB} MB, {CACHE_TTL_MINUTES} min TTL\n")
     sys.stderr.write(f"[SERVER] Concurrency: {MAX_PARALLEL_SEARCHES_PER_CALL} per call, {MAX_GLOBAL_SEARCHES} global\n")
+    sys.stderr.write(f"[SERVER] Redis: {'Enabled' if redis_connected else 'Disabled (using local state)'}\n")
 
     @server.list_resources()
     async def handle_list_resources() -> list[types.Resource]:
@@ -808,6 +915,10 @@ async def main():
                             "type": "integer",
                             "description": "Number of hours to search back from now"
                         },
+                        "minutes_back": {
+                            "type": "integer",
+                            "description": "Number of minutes to search back from now (for surgical precision in large log files)"
+                        },
                         "date": {
                             "type": "string",
                             "description": "Specific date to search. Supports: day names (Sunday, Monday), specific dates (Dec 14, 2025-12-14), or relative (today, yesterday)"
@@ -828,30 +939,6 @@ async def main():
                         }
                     },
                     "required": ["service_name", "query"]
-                }
-            ),
-            types.Tool(
-                name="get_insights",
-                description="Analyze log content and get expert recommendations based on known patterns.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "service_name": {
-                            "type": "string",
-                            "description": "Service name"
-                        },
-                        "log_content": {
-                            "type": "string",
-                            "description": "Log content to analyze"
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["text", "json"],
-                            "description": "Output format (default: text)",
-                            "default": "text"
-                        }
-                    },
-                    "required": ["service_name", "log_content"]
                 }
             ),
             types.Tool(
@@ -883,8 +970,6 @@ async def main():
 
         if name == "search_logs":
             return await search_logs_handler(arguments, config)
-        elif name == "get_insights":
-            return await get_insights_handler(arguments, config)
         elif name == "read_search_file":
             return await read_search_file_handler(arguments)
         else:
@@ -951,6 +1036,8 @@ async def main():
             else:
                 logger.warning(f"Could not parse date: {date_str}, using today")
                 time_range["specific_date"] = datetime.now().strftime("%Y-%m-%d")
+        elif args.get("minutes_back"):
+            time_range["minutes_back"] = int(args["minutes_back"])
         elif args.get("hours_back"):
             time_range["hours_back"] = int(args["hours_back"])
         else:
@@ -960,8 +1047,11 @@ async def main():
         logger.info(f"search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}")
         sys.stderr.write(f"[REQUEST] search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}\n")
         
+        # Get cache instance (Redis or local)
+        cache = get_search_cache()
+        
         # Check cache
-        cached = search_cache.get(services, query, time_range)
+        cached = cache.get(services, query, time_range)
         if cached:
             matches, metadata = cached
             metadata["cached"] = True
@@ -972,8 +1062,11 @@ async def main():
             else:
                 return [types.TextContent(type="text", text=format_matches_text(matches, metadata))]
         
+        # Get semaphore instance (Redis or local)
+        search_semaphore = get_search_semaphore()
+        
         # Acquire global semaphore
-        async with global_search_semaphore:
+        async with search_semaphore:
             try:
                 # Setup
                 progress = ProgressTracker(0, services)
@@ -1002,7 +1095,7 @@ async def main():
                             error_occurred = error_msg
                         elif isinstance(result, list):
                             all_matches.extend(result)
-                    
+                     
                 except asyncio.TimeoutError:
                     error_occurred = f"Search auto-cancelled after {AUTO_CANCEL_TIMEOUT_SECONDS} seconds"
                     sys.stderr.write(f"[TIMEOUT] {error_occurred}\n")
@@ -1021,28 +1114,35 @@ async def main():
                     metadata["error"] = error_occurred
                     metadata["partial"] = True
                 
-                # Handle overflow
+                # Always save results to file for user retrieval
                 saved_file = None
-                if len(all_matches) > MAX_IN_MEMORY_MATCHES:
-                    # Save to file
-                    is_partial = error_occurred is not None
-                    saved_file = generate_output_filename(services, is_partial)
+                logger.debug(f"Search returned {len(all_matches)} matches")
+                
+                # Save all results to file in session directory
+                is_partial = error_occurred is not None
+                saved_file = generate_output_filename(services, is_partial)
+                logger.info(f"Saving {len(all_matches)} matches to {saved_file}")
+                
+                if save_matches_to_file(all_matches, saved_file):
+                    metadata["saved_to"] = str(saved_file)
+                    logger.info(f"Results saved successfully to {saved_file}")
                     
-                    if save_matches_to_file(all_matches, saved_file):
-                        metadata["saved_to"] = str(saved_file)
+                    # Determine preview size
+                    if len(all_matches) > PREVIEW_MATCHES_LIMIT:
                         metadata["overflow"] = True
-                        
-                        # Return preview
-                        preview_matches = all_matches[:500]
+                        preview_matches = all_matches[:PREVIEW_MATCHES_LIMIT]
+                        logger.debug(f"Returning preview of {PREVIEW_MATCHES_LIMIT} matches (total: {len(all_matches)})")
                     else:
-                        # File save failed, return what we can
-                        preview_matches = all_matches[:MAX_IN_MEMORY_MATCHES]
+                        preview_matches = all_matches
+                        logger.debug(f"Returning all {len(all_matches)} matches in response")
                 else:
-                    preview_matches = all_matches
+                    # File save failed, return what we can
+                    preview_matches = all_matches[:PREVIEW_MATCHES_LIMIT] if len(all_matches) > PREVIEW_MATCHES_LIMIT else all_matches
+                    logger.warning(f"File save failed, returning {len(preview_matches)} matches in memory")
                 
                 # Cache if successful and not too large
                 if not error_occurred and not metadata.get("overflow"):
-                    search_cache.put(services, query, time_range, all_matches, metadata)
+                    cache.put(services, query, time_range, all_matches, metadata)
                 
                 sys.stderr.write(f"[COMPLETE] {len(all_matches)} matches in {duration:.2f}s\n")
                 
@@ -1057,44 +1157,6 @@ async def main():
                 import traceback
                 traceback.print_exc()
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-
-    async def get_insights_handler(args: dict, config: AppConfig) -> list[types.TextContent]:
-        """Handle get_insights tool with JSON format support"""
-        service_name = args.get("service_name")
-        content = args.get("log_content", "")
-        format_type = args.get("format", "text")
-        
-        target_service = next((s for s in config.services if s.name == service_name), None)
-        if not target_service or not target_service.insight_rules:
-            no_rules_msg = "No specific insight rules configured for this service."
-            if format_type == "json":
-                return [types.TextContent(type="text", text=format_insights_json([], 0))]
-            else:
-                return [types.TextContent(type="text", text=no_rules_msg)]
-        
-        insights = []
-        lower_content = content.lower()
-        matched_count = 0
-        
-        for rule in target_service.insight_rules:
-            matched = False
-            for pattern in rule.patterns:
-                if pattern.lower() in lower_content:
-                    matched = True
-                    break
-            
-            if matched:
-                insights.append({
-                    "severity": rule.severity,
-                    "pattern": pattern,
-                    "recommendation": rule.recommendation
-                })
-                matched_count += 1
-        
-        if format_type == "json":
-            return [types.TextContent(type="text", text=format_insights_json(insights, matched_count))]
-        else:
-            return [types.TextContent(type="text", text=format_insights_text(insights))]
 
     async def read_search_file_handler(args: dict) -> list[types.TextContent]:
         """Handle read_search_file tool"""
@@ -1161,4 +1223,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        # Cleanup Redis connection
+        if redis_coordinator:
+            asyncio.run(shutdown_redis())
+

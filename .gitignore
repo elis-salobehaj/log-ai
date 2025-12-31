@@ -34,6 +34,7 @@ var_log/
 # Environment configuration
 .env
 config/.env
+config/services.yaml
 
 # Temporary
 .last_session

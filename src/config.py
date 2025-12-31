@@ -6,18 +6,12 @@ from typing import List, Optional
 from pydantic import BaseModel
 import os
 
-class InsightRule(BaseModel):
-    patterns: List[str]
-    recommendation: str
-    severity: str
-
 class ServiceConfig(BaseModel):
     name: str
     type: str
     description: str
     path_pattern: str
     path_date_formats: Optional[List[str]] = None
-    insight_rules: Optional[List[InsightRule]] = []
 
 class AppConfig(BaseModel):
     services: List[ServiceConfig]
@@ -53,18 +47,20 @@ def expand_pattern(pattern: str, date: datetime = None, hour: int = None) -> str
         guid="*", # Handle guid placeholder as wildcard if present
     )
 
-def find_log_files(service: ServiceConfig, hours_back: int = None, specific_date: str = None, start_hour: int = None, end_hour: int = None) -> List[str]:
+def find_log_files(service: ServiceConfig, hours_back: int = None, minutes_back: int = None, specific_date: str = None, start_hour: int = None, end_hour: int = None) -> List[str]:
     """
     Finds log files matching the service pattern.
     
     Args:
         service: Service configuration
         hours_back: Number of hours to search back from now
+        minutes_back: Number of minutes to search back from now (for surgical precision)
         specific_date: Specific date in YYYY-MM-DD format (searches all 24 hours)
         start_hour: Start hour (0-23) when combined with specific_date for time range
         end_hour: End hour (0-23) when combined with specific_date for time range
     
     Time range examples:
+        - minutes_back=10: Last 10 minutes from now
         - hours_back=2: Last 2 hours from now
         - specific_date="2025-12-14": All of Dec 14, 2025 (00:00-23:59)
         - specific_date="2025-12-14", start_hour=14, end_hour=16: Dec 14, 2-4pm
@@ -100,6 +96,22 @@ def find_log_files(service: ServiceConfig, hours_back: int = None, specific_date
         except ValueError:
             sys.stderr.write(f"[ERROR] Invalid specific_date format: {specific_date}, expected YYYY-MM-DD\n")
             return []
+    elif minutes_back is not None and minutes_back > 0:
+        # Search specific minutes back from now
+        # For minutes, we need to check current hour and possibly previous hour
+        now = datetime.now()
+        start_time = now - timedelta(minutes=minutes_back)
+        
+        # Add current hour
+        times_to_check.append((now, True))  # True = specific hour
+        
+        # If minutes_back spans into previous hour(s), add those too
+        if start_time.hour != now.hour or start_time.date() != now.date():
+            current_check = now
+            while current_check > start_time:
+                current_check = current_check - timedelta(hours=1)
+                if current_check >= start_time:
+                    times_to_check.append((current_check, True))
     elif hours_back is not None and hours_back > 0:
         # Search specific hours back from now
         now = datetime.now()

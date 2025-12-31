@@ -28,7 +28,6 @@ async def test_config_loading():
         print(f"\nSample service: {service.name}")
         print(f"  Type: {service.type}")
         print(f"  Path pattern: {service.path_pattern}")
-        print(f"  Insight rules: {len(service.insight_rules)}")
     
     assert len(config.services) > 0, "Should load services from config"
     print("\n✓ Configuration loaded successfully\n")
@@ -49,10 +48,10 @@ async def test_cache_functionality():
     cache = SearchCache()
     
     # Test put and get
-    services = ["hub-ca-api"]
+    services = ["dev-ca-api"]
     query = "error"
     time_range = {"hours_back": 1}
-    matches = [{"file": "test.log", "line": 123, "content": "ERROR: test", "service": "hub-ca-api"}]
+    matches = [{"file": "test.log", "line": 123, "content": "ERROR: test", "service": "dev-ca-api"}]
     metadata = {"total_matches": 1}
     
     cache.put(services, query, time_range, matches, metadata)
@@ -70,7 +69,7 @@ async def test_cache_functionality():
     print("✓ Cache miss works correctly")
     
     # Test order independence
-    result = cache.get(["hub-ca-api"], query, time_range)
+    result = cache.get(["dev-ca-api"], query, time_range)
     assert result is not None, "Should hit with same parameters"
     print("✓ Order-independent cache key works")
     
@@ -97,9 +96,9 @@ async def test_file_helpers():
     print(f"✓ Output directory created: {FILE_OUTPUT_DIR}")
     
     # Test filename generation
-    filename = generate_output_filename(["hub-ca-api", "test-service"], is_partial=False)
+    filename = generate_output_filename(["dev-ca-api", "test-service"], is_partial=False)
     assert "logai-search" in filename.name, "Should contain logai-search"
-    assert "hub-ca-api" in filename.name, "Should contain service name"
+    assert "dev-ca-api" in filename.name, "Should contain service name"
     print(f"✓ Generated filename: {filename.name}")
     
     partial_filename = generate_output_filename(["test"], is_partial=True)
@@ -121,8 +120,6 @@ async def test_format_helpers():
     
     format_matches_text = server_module.format_matches_text
     format_matches_json = server_module.format_matches_json
-    format_insights_text = server_module.format_insights_text
-    format_insights_json = server_module.format_insights_json
     
     # Test matches formatting
     matches = [
@@ -147,21 +144,6 @@ async def test_format_helpers():
     assert '"metadata"' in json_output, "Should have metadata key"
     print("✓ JSON format working")
     
-    # Test insights formatting
-    insights = [
-        {"severity": "high", "pattern": "error", "recommendation": "Check logs"}
-    ]
-    
-    insights_text = format_insights_text(insights)
-    assert "HIGH" in insights_text, "Should contain severity"
-    assert "Check logs" in insights_text, "Should contain recommendation"
-    print("✓ Insights text format working")
-    
-    insights_json = format_insights_json(insights, 1)
-    assert '"insights"' in insights_json, "Should have insights key"
-    assert '"matched_count"' in insights_json, "Should have metadata"
-    print("✓ Insights JSON format working")
-    
     print("\n✓ Format helpers working\n")
 
 
@@ -182,7 +164,7 @@ async def main():
         print("=" * 60)
         print("\nServer is ready to use:")
         print("1. Configure AI agent to connect via MCP")
-        print("2. Agent can call search_logs, get_insights, read_search_file")
+        print("2. Agent can call search_logs, read_search_file")
         print("3. Monitor stderr for progress and cache stats")
         print("=" * 60 + "\n")
         

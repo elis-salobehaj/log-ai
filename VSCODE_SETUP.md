@@ -19,8 +19,8 @@ This method makes the MCP server available only in your current workspace.
       "type": "stdio",
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "cd /home/srt/log-ai && ~/.local/bin/uv run src/server.py"
+        "view-user@syslog.example.com",
+        "cd /home/view-user/log-ai && ~/.local/bin/uv run src/server.py"
       ]
     }
   }
@@ -37,7 +37,7 @@ This method makes the MCP server available only in your current workspace.
 Open GitHub Copilot Chat and try:
 
 ```
-@workspace /tools log-ai search_logs hub-ca-api timeout 2 hours
+@workspace /tools log-ai search_logs dev-ca-api timeout 2 hours
 ```
 
 ---
@@ -68,8 +68,8 @@ Add this to your `settings.json`:
     "log-ai": {
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py"
+        "view-user@syslog.example.com",
+        "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
       ]
     }
   }
@@ -86,13 +86,13 @@ Add this to your `settings.json`:
 **4. Test in Copilot Chat:**
 
 ```
-Use log-ai to search for errors in hub-ca-api in the past hour
+Use log-ai to search for errors in dev-ca-api in the past hour
 ```
 
 or
 
 ```
-@workspace /tools log-ai search_logs hub-ca-api timeout 2 hours
+@workspace /tools log-ai search_logs dev-ca-api timeout 2 hours
 ```
 
 ## SSH Requirements
@@ -108,12 +108,12 @@ The MCP server connects via SSH, so you need passwordless SSH authentication:
 
 2. **Copy to syslog server**:
    ```bash
-   ssh-copy-id srt@syslog.awstst.pason.com
+   ssh-copy-id view-user@syslog.example.com
    ```
 
 3. **Test connection**:
    ```bash
-   ssh srt@syslog.awstst.pason.com "echo 'Connection OK'"
+   ssh view-user@syslog.example.com "echo 'Connection OK'"
    ```
    
    Should connect without password prompt.
@@ -124,15 +124,15 @@ If VSCode MCP connection fails:
 
 1. **Test SSH manually**:
    ```bash
-   ssh srt@syslog.awstst.pason.com "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py"
+   ssh view-user@syslog.example.com "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
    ```
    
    Should show: `{"jsonrpc": "2.0", ...}`
 
 2. **Check SSH config** (`~/.ssh/config`):
    ```
-   Host syslog.awstst.pason.com
-       User srt
+   Host syslog.example.com
+       User view-user
        IdentityFile ~/.ssh/id_ed25519
        ServerAliveInterval 60
    ```
@@ -149,7 +149,7 @@ Once connected, Copilot can use these tools:
 ### search_logs
 Search log entries across services:
 - **Parameters**: service_name, query, hours_back/days_back, format
-- **Example**: "Search hub-ca-api for timeout in past 2 hours"
+- **Example**: "Search dev-ca-api for timeout in past 2 hours"
 
 ### get_insights
 Get recommendations based on log patterns:
@@ -179,12 +179,12 @@ If you use IntelliJ IDEA with Amazon Q or Junie, you can also connect to LogAI:
 - **Name**: `log-ai`
 - **Connection Type**: `Stdio`
 - **Command**: `ssh`
-- **Arguments**: `srt@syslog.awstst.pason.com "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py"`
+- **Arguments**: `view-user@syslog.example.com "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"`
 
 **4. Apply and Restart IntelliJ**
 
 **5. Test:**
-Ask your AI assistant: "Search hub-ca-api logs for errors in the past hour"
+Ask your AI assistant: "Search dev-ca-api logs for errors in the past hour"
 
 ---
 
@@ -192,7 +192,7 @@ Ask your AI assistant: "Search hub-ca-api logs for errors in the past hour"
 
 ### Finding Recent Errors
 ```
-You: Find errors in hub-ca-api from the past hour
+You: Find errors in dev-ca-api from the past hour
 
 Copilot: I'll search the logs...
 [Uses search_logs tool]
@@ -207,7 +207,7 @@ Copilot: Found 23 error entries:
 ```
 You: Are there timeout issues across all hub services?
 
-Copilot: I'll search hub-ca-api, hub-ca-aie-service, and hub-ca-auth...
+Copilot: I'll search dev-ca-api, dev-ca-rock-service, and dev-ca-auth...
 [Uses search_logs with multiple services]
 
 Copilot: Found 156 timeout entries across 3 services...
@@ -235,7 +235,7 @@ If direct SSH doesn't work (firewall/VPN issues), create a wrapper script:
 **~/bin/log-ai-mcp.sh:**
 ```bash
 #!/bin/bash
-ssh -T srt@syslog.awstst.pason.com "cd /home/srt/log-ai && ~/.local/bin/uv run src/server.py"
+ssh -T view-user@syslog.example.com "cd /home/view-user/log-ai && ~/.local/bin/uv run src/server.py"
 ```
 
 Make executable:
@@ -260,7 +260,7 @@ Update settings.json:
 By default, results are text format. For JSON (better for Copilot parsing):
 
 ```
-You: Search hub-ca-api for errors (format: json)
+You: Search dev-ca-api for errors (format: json)
 ```
 
 Copilot will request JSON format which provides structured data.
@@ -271,7 +271,7 @@ While Copilot searches, the MCP server logs activity on the remote server:
 
 ```bash
 # SSH to syslog server and tail logs
-ssh srt@syslog.awstst.pason.com
+ssh view-user@syslog.example.com
 tail -f /tmp/log-ai-debug.log  # if debug logging enabled
 ```
 

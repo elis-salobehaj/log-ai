@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Search hub-ca-edr-proxy-service for OOM errors on Dec 14, 2025
+Search dev-ca-awesome-service for OOM errors on Dec 14, 2025
 """
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 
@@ -17,10 +18,20 @@ async def print_stderr(stream):
         sys.stderr.flush()
 
 async def test_search():
+    # Configuration from environment (required)
+    syslog_user = os.environ.get("SYSLOG_USER")
+    syslog_server = os.environ.get("SYSLOG_SERVER")
+    
+    if not syslog_user or not syslog_server:
+        raise ValueError(
+            "Required environment variables SYSLOG_USER and SYSLOG_SERVER must be set.\n"
+            "Source config/.env or set them manually: export SYSLOG_USER=your-user SYSLOG_SERVER=your-server"
+        )
+    
     # Start the server process
     proc = await asyncio.create_subprocess_exec(
-        "ssh", "srt@syslog.awstst.pason.com",
-        "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py",
+        "ssh", f"{syslog_user}@{syslog_server}",
+        f"~/.local/bin/uv run --directory /home/{syslog_user}/log-ai src/server.py",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
@@ -70,7 +81,7 @@ async def test_search():
             "params": {
                 "name": "search_logs",
                 "arguments": {
-                    "service_name": "hub-ca-edr-proxy-service",
+                    "service_name": "dev-ca-awesome-service",
                     "query": "oom|OutOfMemory",
                     "days_back": 4,  # Need 4 to include Dec 14
                     "format": "json"
@@ -78,7 +89,7 @@ async def test_search():
             }
         }
         
-        print(f"\nSearching hub-ca-edr-proxy-service for OOM errors on Dec 14, 2025...\n", file=sys.stderr)
+        print(f"\nSearching dev-ca-awesome-service for OOM errors on Dec 14, 2025...\n", file=sys.stderr)
         
         proc.stdin.write((json.dumps(search_request) + "\n").encode())
         await proc.stdin.drain()

@@ -7,10 +7,25 @@
 
 set -e
 
-REMOTE_USER="srt"
-REMOTE_HOST="syslog.awstst.pason.com"
-REMOTE_DIR="/home/srt/log-ai"
+# Load environment configuration from .env file
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$LOCAL_DIR/config/.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo "❌ Configuration file not found: $ENV_FILE"
+    exit 1
+fi
+
+# Export all variables from .env file
+echo "Loading configuration from config/.env..."
+set -a  # automatically export all variables
+source "$ENV_FILE"
+set +a
+
+# Configuration - Use environment variables (now loaded from .env)
+REMOTE_USER="${SYSLOG_USER}"
+REMOTE_HOST="${SYSLOG_SERVER}"
+REMOTE_DIR="/home/${REMOTE_USER}/log-ai"
 
 echo "========================================"
 echo "Deploying LogAI to $REMOTE_HOST"
@@ -30,7 +45,7 @@ echo ""
 # Compile Python files locally first
 echo "Checking Python syntax..."
 cd "$LOCAL_DIR"
-python3 -m py_compile src/server.py src/config.py || {
+python3 -m py_compile src/server.py src/config.py src/config_loader.py src/redis_coordinator.py || {
     echo "❌ Syntax errors found. Fix them before deploying."
     exit 1
 }
@@ -70,9 +85,36 @@ ssh "$REMOTE_USER@$REMOTE_HOST" "cd $REMOTE_DIR && ~/.local/bin/uv sync" || {
 echo "✓ Dependencies installed"
 echo ""
 
+# Check/setup Redis on remote server
+echo "Checking Redis on remote server..."
+if ssh "$REMOTE_USER@$REMOTE_HOST" "command -v redis-server >/dev/null 2>&1"; then
+    echo "✓ Redis is installed"
+    
+    # Check if Redis is running
+    if ssh "$REMOTE_USER@$REMOTE_HOST" "redis-cli ping >/dev/null 2>&1"; then
+        echo "✓ Redis is running"
+    else
+        echo "⚠️  Redis is installed but not running"
+        echo "   Start it with: sudo systemctl start redis-server"
+        echo "   Or run manually: redis-server --daemonize yes"
+        echo ""
+        echo "   For now, server will use local state (no global coordination)"
+    fi
+else
+    echo "⚠️  Redis is not installed"
+    echo ""
+    echo "   To enable global coordination across SSH sessions, install Redis:"
+    echo "   sudo apt update && sudo apt install -y redis-server"
+    echo "   sudo systemctl enable redis-server"
+    echo "   sudo systemctl start redis-server"
+    echo ""
+    echo "   For now, server will use local state (no global coordination)"
+fi
+echo ""
+
 # Test server loads correctly
 echo "Testing server imports..."
-ssh "$REMOTE_USER@$REMOTE_HOST" "cd $REMOTE_DIR && ~/.local/bin/uv run python -c 'import sys; sys.path.insert(0, \"src\"); from server import SearchCache, ensure_output_dir; print(\"✓ Server module loads correctly\")'" || {
+ssh "$REMOTE_USER@$REMOTE_HOST" "cd $REMOTE_DIR && ~/.local/bin/uv run python -c 'import sys; sys.path.insert(0, \"src\"); from server import SearchCache, ensure_output_dir; from config_loader import get_config; from redis_coordinator import RedisCoordinator; print(\"✓ Server module loads correctly\")'" || {
     echo "❌ Server module failed to load"
     exit 1
 }
@@ -100,7 +142,6 @@ echo "   }"
 echo ""
 echo "2. Available MCP tools:"
 echo "   - search_logs: Search log entries (supports multi-service)"
-echo "   - get_insights: Get expert recommendations"
 echo "   - read_search_file: Read saved overflow results"
 echo ""
 echo "3. Monitor logs:"
@@ -114,5 +155,13 @@ echo "   - Smart caching (500MB, 10min TTL)"
 echo "   - Multi-service support"
 echo "   - JSON/text format options"
 echo "   - Auto file overflow for large results"
+echo "   - Redis coordination (if enabled)"
+echo ""
+echo "5. Redis coordination (optional):"
+echo "   - Enables global limits across all SSH sessions"
+echo "   - Shared cache (500MB total across all users)"
+echo "   - Rate limiting coordination"
+echo "   - To enable: Install Redis and set REDIS_ENABLED=true"
+echo "   - Configure via: config/env.sh or environment variables"
 echo ""
 echo "========================================"

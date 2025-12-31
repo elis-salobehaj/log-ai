@@ -1,6 +1,10 @@
 # LogAI
 
-**LogAI** is an MCP server for investigating system logs at scale (300GB+/day). It provides streaming search capabilities with no timeouts, smart caching, and multi-service support. Designed to work with AI agents like GitHub Copilot, Claude, and IntelliJ Junie via SSH.
+**LogAI** is an MCP server for investigating system logs at scale (300GB+/day). It provides streaming search capabilities with smart caching, Redis-based coordination, and multi-service support. Designed to work with AI agents like GitHub Copilot, Claude, and IntelliJ Junie via SSH.
+
+![GitHub Copilot Integration Example](docs/copilot-integration-example.png)
+
+> **Live Example**: Screenshot shows GitHub Copilot successfully investigating awesome service stability across Canadian and US regions, analyzing 74 log entries to confirm 18+ hours of uptime with zero issues on December 29, 2025.
 
 ## Architecture
 
@@ -11,43 +15,62 @@ graph LR
     Agent["AI Agent<br/>(Copilot/Claude)"] -- SSH + MCP --> MCP["MCP Server<br/>(Streaming)"]
     MCP -- Async Ripgrep --> Logs["Log Files<br/>(300GB+)"]
     MCP -- Config --> Rules["services.yaml<br/>(90+ services)"]
-    MCP -- Cache --> Cache["LRU Cache<br/>(500MB, 10min)"]
-    MCP -- Overflow --> Files["/tmp/log-ai/<br/>(JSON files)"]
+    MCP -- Cache --> Cache["Redis Cache<br/>(500MB, 10min)"]
+    MCP -- Overflow --> Files["/tmp/log-ai/{session}/<br/>(JSON files)"]
+    MCP -- Coordination --> Redis["Redis<br/>(Optional)"]
 ```
 
 ## Key Features
 
-### 🚀 Streaming Search (No Timeouts)
+### 🚀 Complete Search Execution
 - Async subprocess execution with line-by-line streaming
-- Progress updates to stderr every 10-100 matches
-- Auto-cancellation after 5 minutes (returns partial results)
-- Handles 1000+ matches without blocking
+- **Always searches ALL log files completely** - no early termination
+- Progress updates to stderr every 2 seconds
+- Auto-cancellation after 300 seconds with partial results
+- Handles unlimited matches (all buffered in memory during search)
 
-### 💾 Smart Caching
-- LRU cache: 100 entries, 500MB max, 10-minute TTL
+### 💾 Smart Caching with Redis Support
+- **Distributed Redis cache** (when enabled): Shared across all sessions
+- **Local LRU fallback**: 100 entries, 500MB max, 10-minute TTL
 - Config-aware: auto-invalidates when services.yaml changes
 - Hit rate tracking and detailed logging
 
 ### 🔀 Multi-Service Search
-- Search multiple services in one call: `["hub-ca-api", "aie-service"]`
+- Search multiple services in one call: `["dev-ca-api", "rock-service"]`
 - Parallel execution with configurable concurrency (5 per call, 10 global)
+- **Redis-coordinated global limits** (when enabled) across all SSH sessions
 - Per-service progress tracking
 
-### 📄 Large Result Handling
-- First 1000 matches kept in memory
-- Overflow saved to `/tmp/log-ai/logai-search-{timestamp}-{services}-{uuid}.json`
-- Preview returned, full results via `read_search_file` tool
+### 📄 Intelligent Result Handling
+- **All results saved to file automatically** in session directory
+- First 50 matches returned in preview for quick viewing
+- Overflow (>50 matches): Preview + file path for full retrieval
+- Files stored in unique session directories: `/tmp/log-ai/{session-id}/`
 - Automatic cleanup after 24 hours
+
+### 🌍 Advanced Date/Time Support
+- **Natural language dates**: "today", "yesterday", "wednesday", "Dec 14"
+- **Time ranges**: "2 to 4pm", "14:00 to 16:00", "2pm-4pm"
+- **Timezone conversion**: Automatically converts user timezone to UTC
+- Supports `hours_back` and `minutes_back` for relative searches
+- **Surgical precision**: Use `minutes_back` for targeted searches in large production logs
 
 ### 📊 Dual Format Support
 - **Text format** (default): Human-readable with metadata header
 - **JSON format**: Structured data for agent parsing
+- **Auto-parsed JSON logs**: Content field automatically parsed when valid JSON
 - Consistent metadata across both formats
 
 ### 🛡️ Error Recovery
-- Partial results returned on subprocess crash
+- Partial results returned on subprocess crash or timeout
 - Errors logged to stderr with full stack trace
-- Search file saved for partial results >500 matches
+- Search file saved for all results (even partial)
+
+### 🔗 Optional Redis Coordination
+- **Global concurrency limits** across all users/sessions
+- **Shared cache** (500MB total) reduces duplicate searches
+- **Distributed semaphores** for rate limiting
+- **Graceful fallback** to local state when Redis unavailable
 
 ---
 
@@ -55,17 +78,34 @@ graph LR
 
 1. Clone this repository to your Syslog Server
 2. Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-3. Install dependencies:
+3. Configure the application:
    ```bash
    cd log-ai
+   
+   # Copy and customize environment configuration
+   cp .env.example config/.env
+   # Edit config/.env with your settings (SYSLOG_SERVER, SYSLOG_USER, etc.)
+   
+   # Copy and customize service definitions
+   cp config/services.yaml.example config/services.yaml
+   # Edit config/services.yaml with your log file patterns
+   ```
+4. Install dependencies:
+   ```bash
    uv sync
+   ```
+5. (Optional) Install Redis for distributed coordination:
+   ```bash
+   sudo apt update && sudo apt install -y redis-server
+   sudo systemctl enable redis-server
+   sudo systemctl start redis-server
    ```
 
 ---
 
 ## MCP Tools
 
-LogAI exposes 3 MCP tools that AI agents can call:
+LogAI exposes 2 MCP tools that AI agents can call:
 
 ### 1. search_logs
 
@@ -74,16 +114,21 @@ Search for log entries across one or more services.
 **Parameters:**
 - `service_name` (string | string[]): Service name(s) to search
 - `query` (string): Keyword or pattern to search for
-- `days_back` (integer, optional): Days to search back (default: 1)
-- `hours_back` (integer, optional): Hours to search back (overrides days_back)
+- `date` (string, optional): Natural language date - "today", "yesterday", "wednesday", "Dec 14", "2025-12-14"
+- `time_range` (string, optional): Time range within date - "2 to 4pm", "14:00 to 16:00", "2pm-4pm"
+- `timezone` (string, optional): User timezone for time conversion - "America/Denver", "EST" (default: "UTC")
+- `hours_back` (integer, optional): Hours to search back from now (alternative to date)
+- `minutes_back` (integer, optional): Minutes to search back from now (for surgical precision in large log files)
 - `format` (string, optional): Output format - "text" or "json" (default: "text")
 
-**Example (Text Format):**
+**Example (Natural Language Date/Time):**
 ```json
 {
-  "service_name": "hub-ca-api",
+  "service_name": "dev-ca-api",
   "query": "timeout",
-  "hours_back": 2,
+  "date": "wednesday",
+  "time_range": "2 to 4pm",
+  "timezone": "America/Denver",
   "format": "text"
 }
 ```
@@ -91,86 +136,68 @@ Search for log entries across one or more services.
 **Response:**
 ```
 === Search Results ===
-Services: hub-ca-api
+Services: dev-ca-api
 Files searched: 156
 Duration: 4.23s
 Total matches: 234
 Showing: 234
 === Matches ===
 
-[hub-ca-api] hub-ca-api-kinesis-xyz.log:1234 ERROR: Connection timeout after 30s
-[hub-ca-api] hub-ca-api-kinesis-abc.log:5678 WARN: Request timeout on /api/v1/data
+[dev-ca-api] dev-ca-api-kinesis-xyz.log:1234 ERROR: Connection timeout after 30s
+[dev-ca-api] dev-ca-api-kinesis-abc.log:5678 WARN: Request timeout on /api/v1/data
 ...
+
+=== Results File ===
+All results saved to: /tmp/log-ai/abc123-2025-12-29/logai-search-20251229-143015-dev-ca-api-abc123.json
+Use read_search_file tool to retrieve full results
 ```
 
-**Example (JSON Format):**
+**Example (Multi-Service with JSON Content):**
 ```json
 {
-  "service_name": ["hub-ca-api", "hub-ca-aie-service"],
+  "service_name": ["dev-ca-awesome-service", "dev-us-awesome-service"],
   "query": "error",
-  "hours_back": 1,
+  "date": "Dec 29",
   "format": "json"
 }
 ```
 
-**Response:**
+**Response (see [log-search-result-example.json](docs/log-search-result-example.json) for full example):**
 ```json
 {
   "matches": [
     {
-      "file": "/syslog/application_logs/2025/12/11/14/hub-ca-api-kinesis-xyz.log",
-      "line": 1234,
-      "content": "ERROR: Connection timeout",
-      "service": "hub-ca-api"
+      "file": "/syslog/application_logs/2025/12/29/15/aws-ecs-auth-kinesis-7-2025-12-29-15-30-32-f9765eed.log",
+      "line": 2034,
+      "content": {
+        "timestamp": "2025-12-29T15:32:00.653519180+0000",
+        "hostname": "ip-10-160-44-43.us-west-2.compute.internal",
+        "level": "WARN",
+        "message": "Encountered status MISSING_PRIVILEGE. Missing Privileges: [super_sercret_access].",
+        "Path": "http://aws-ecs-auth.example.com/v1/validateSession",
+        "dd.trace_id": "69529ef00000000012db3f8badb09b21",
+        "dd.service": "example-auth-service",
+        "container_name": "aws-ecs-auth",
+        "ecs_cluster": "datahub_fargate_01"
+      },
+      "service": "aws-ecs-auth"
     }
   ],
   "metadata": {
     "files_searched": 312,
     "duration_seconds": 6.5,
-    "total_matches": 2847,
+    "total_matches": 74,
     "cached": false,
-    "services": ["hub-ca-api", "hub-ca-aie-service"],
+    "services": ["dev-ca-awesome-service", "dev-us-awesome-service"],
     "overflow": true,
-    "saved_to": "/tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json"
+    "saved_to": "/tmp/log-ai/xyz789-2025-12-29/logai-search-20251229-180000-awesome-def456.json"
   }
 }
 ```
 
-### 2. get_insights
+>  **Note**: When logs contain JSON content, it's automatically parsed into structured objects (see `content` field above).
 
-Analyze log content and get expert recommendations.
-
-**Parameters:**
-- `service_name` (string): Service name
-- `log_content` (string): Log content to analyze
-- `format` (string, optional): Output format - "text" or "json" (default: "text")
-
-**Example:**
-```json
-{
-  "service_name": "hub-ca-api",
-  "log_content": "ERROR: OutOfMemoryError: Java heap space",
-  "format": "json"
-}
-```
-
-**Response:**
-```json
-{
-  "insights": [
-    {
-      "severity": "critical",
-      "pattern": "OutOfMemoryError",
-      "recommendation": "Check JVM memory limits and heap dump analysis"
-    }
-  ],
-  "metadata": {
-    "matched_count": 1
-  }
-}
-```
-
-### 3. read_search_file
+### 2. read_search_file
 
 Read a previously saved search result file.
 
@@ -181,7 +208,7 @@ Read a previously saved search result file.
 **Example:**
 ```json
 {
-  "file_path": "/tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json",
+  "file_path": "/tmp/log-ai/logai-search-20251211-143015-dev-ca-api-abc123.json",
   "format": "json"
 }
 ```
@@ -203,8 +230,8 @@ Create or update `.vscode/mcp.json` in your workspace:
       "type": "stdio",
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "cd /home/srt/log-ai && ~/.local/bin/uv run src/server.py"
+        "view-user@syslog.example.com",
+        "cd /home/view-user/log-ai && ~/.local/bin/uv run src/server.py"
       ]
     }
   }
@@ -221,8 +248,8 @@ Add to your User Settings (`Ctrl+Shift+P` → "Preferences: Open User Settings (
     "log-ai": {
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py"
+        "view-user@syslog.example.com",
+        "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
       ]
     }
   }
@@ -233,7 +260,7 @@ After adding, reload VSCode (`Ctrl+Shift+P` → "Developer: Reload Window").
 
 **Test in Copilot Chat:**
 ```
-@workspace /tools log-ai search_logs hub-ca-api timeout 2 hours
+@workspace /tools log-ai search_logs dev-ca-api timeout 2 hours
 ```
 
 ### Claude Desktop
@@ -250,8 +277,8 @@ Add to `claude_desktop_config.json`:
     "log-ai": {
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "uv run --directory /home/srt/log-ai src/server.py"
+        "view-user@syslog.example.com",
+        "uv run --directory /home/view-user/log-ai src/server.py"
       ]
     }
   }
@@ -269,27 +296,95 @@ Restart Claude Desktop after adding the configuration.
    - **Name**: `log-ai`
    - **Connection Type**: `Stdio`
    - **Command**: `ssh`
-   - **Arguments**: `srt@syslog.awstst.pason.com "~/.local/bin/uv run --directory /home/srt/log-ai src/server.py"`
+   - **Arguments**: `view-user@syslog.example.com "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"`
 5. Click **OK** and restart IntelliJ
 
 **Ensure SSH Agent is running:**
 ```bash
 # Test passwordless SSH
-ssh srt@syslog.awstst.pason.com "echo 'SSH OK'"
+ssh view-user@syslog.example.com "echo 'SSH OK'"
 ```
 
 ---
 
 ## Example Agent Conversations
 
-### Finding Errors
+### Real-World Example: Service Health Investigation
+
+**User Query:**
+> "Check awesome service for recent issues"
+
+**Agent Response:**
+> I'll check both the Canadian and US awesome services for container restarts and errors on December 29, 2025.
+
+**Agent executes:** `search_logs` with `service_name: ["dev-ca-awesome-service", "dev-us-awesome-service"]`, `query: "error"`, `date: "Dec 29"`
+
+**Agent's Analysis:**
+> **Excellent News! Both Canadian and US awesome Services Are Completely Stable on December 29, 2025:**
+> 
+> **Summary:**
+> - Total matches: 74 (all benign Datadog agent warnings)
+> - dev-ca-awesome-service: 37 matches ✅
+> - dev-us-awesome-service: 37 matches ✅
+> 
+> **Key Findings - Both Services Healthy:**
+> 
+> **dev-ca-awesome-service (Canadian):**
+> - ✅ Completely Stable - No Issues
+> - NO container restarts - Same container ID all day: `9b9a1ad15267462aaf6a92896aeb2577`
+> - NO OutOfMemory errors
+> - NO termination events
+> - NO application errors
+> - Task definition stable: `dev-ca-awesome-service:31`
+> - Running continuously from 00:13 UTC to 18:13 UTC (18+ hours)
+> - All 37 matches are harmless Datadog IMDSv2 metadata warnings
+> 
+> **dev-us-awesome-service (US):**
+> - ✅ Completely Stable - No Issues
+> - NO container restarts - Same container ID all day: `23f6c47e919d4548a97d0a7de4f3214d`
+> - NO OutOfMemory errors
+> - NO termination events
+> - NO application errors
+> - Task definition stable: `dev-us-awesome-service:30`
+> - Running continuously from 00:07 UTC to 18:08 UTC (18+ hours)
+> - All 37 matches are harmless Datadog IMDSv2 metadata warnings
+> 
+> **Analysis:**
+> Both services are running perfectly on December 29, 2025! This is a stark contrast to the December 14 incident when the CA awesome experienced systematic OOM failures throughout the day. The only log entries matching error patterns are benign INFO-level Datadog agent warnings about metadata retrieval - these are configuration-related and do not indicate any service problems.
+> 
+> **Comparison to December 14:**
+> - December 14: CA awesome had 5+ OOM crashes throughout the day
+> - December 29: Both CA and US awesome running smoothly with 18+ hours uptime, zero issues
+> 
+> This suggests the memory configuration issues from December 14 may have been addressed, or the workload patterns on December 29 are within the services' capacity.
+
+See full conversation example in [docs/copilot-integration-example.png](docs/copilot-integration-example.png) and sample results in [log-search-result-example.json](docs/log-search-result-example.json).
+
+---
+
+### Surgical Precision with minutes_back
 ```
-User: Check for errors in hub-ca-api in the past hour
+User: The API is throwing 500 errors right now, check the last 10 minutes
 
-Agent: I'll search the hub-ca-api logs for errors...
-[Calls search_logs tool]
+Agent: I'll search the recent logs for 500 errors...
+[Calls search_logs with minutes_back=10]
 
-Agent: Found 23 error entries in the past hour. The most common issues are:
+Agent: Found 8 HTTP 500 errors in the last 10 minutes:
+- 6 occurrences: "Database connection pool exhausted"
+- 2 occurrences: "Redis timeout on cache lookup"
+
+All errors started at 15:23 UTC. The database connection pool appears to be the primary issue.
+Would you like me to check if other services are experiencing similar database issues?
+```
+
+### Finding Errors with Time Range
+```
+User: Check for errors in dev-ca-api between 2pm and 4pm yesterday
+
+Agent: I'll search the dev-ca-api logs for errors in that time window...
+[Calls search_logs with date="yesterday", time_range="2 to 4pm", timezone="America/Denver"]
+
+Agent: Found 23 error entries between 2-4 PM yesterday. The most common issues are:
 - Connection timeouts (12 occurrences)
 - Null pointer exceptions (8 occurrences)  
 - Database deadlocks (3 occurrences)
@@ -302,12 +397,12 @@ Would you like me to show you specific log entries or analyze one of these issue
 User: Are there any timeout issues across hub services?
 
 Agent: I'll search all hub services for timeout patterns...
-[Calls search_logs with ["hub-ca-api", "hub-ca-aie-service", "hub-ca-auth"]]
+[Calls search_logs with ["dev-ca-api", "dev-ca-rock-service", "dev-ca-auth"]]
 
 Agent: Found 156 timeout-related entries across 3 services:
-- hub-ca-api: 89 timeouts
-- hub-ca-aie-service: 45 timeouts
-- hub-ca-auth: 22 timeouts
+- dev-ca-api: 89 timeouts
+- dev-ca-rock-service: 45 timeouts
+- dev-ca-auth: 22 timeouts
 
 The majority occurred between 2-4 PM. Would you like me to investigate the root cause?
 ```
@@ -321,11 +416,15 @@ Agent: Searching all services for ERROR logs...
 [PROGRESS] 1200 matches
 [PROGRESS] 2500 matches
 
-Agent: Found 5,234 ERROR logs across 45 services. The results have been saved to a file. 
-Here are the top 3 services by error count:
-1. hub-ca-api: 1,234 errors
+Agent: Found 5,234 ERROR logs across 45 services. Results saved to file.
+Here's a preview of the first 50 matches, showing the top services by error count:
+
+1. dev-ca-api: 1,234 errors
 2. edr-na-updater: 892 errors
 3. rig-info-server: 567 errors
+
+All 5,234 results are saved to:
+/tmp/log-ai/abc123-2025-12-29/logai-search-20251229-143015-all-services-xyz789.json
 
 Would you like me to retrieve the full results or focus on a specific service?
 ```
@@ -334,27 +433,61 @@ Would you like me to retrieve the full results or focus on a specific service?
 
 ## Configuration
 
-All settings are configurable via constants in [`src/server.py`](src/server.py):
+### Environment Variables
 
-```python
+Configuration is managed via [`src/config_loader.py`](src/config_loader.py) and can be customized in [`config/env.sh`](config/env.sh):
+
+```bash
 # Cache settings
-CACHE_MAX_SIZE_MB = 500
-CACHE_MAX_ENTRIES = 100
-CACHE_TTL_MINUTES = 10
+export CACHE_MAX_SIZE_MB=500
+export CACHE_MAX_ENTRIES=100
+export CACHE_TTL_MINUTES=10
 
 # Concurrency limits
-MAX_PARALLEL_SEARCHES_PER_CALL = 5
-MAX_GLOBAL_SEARCHES = 10
+export MAX_PARALLEL_SEARCHES_PER_CALL=5
+export MAX_GLOBAL_SEARCHES=10
 
 # Search limits
-AUTO_CANCEL_TIMEOUT_SECONDS = 300  # 5 minutes
-MAX_IN_MEMORY_MATCHES = 1000
+export AUTO_CANCEL_TIMEOUT_SECONDS=300
+export PREVIEW_MATCHES_LIMIT=50
 
 # File output
-FILE_OUTPUT_DIR = Path("/tmp/log-ai")
-CLEANUP_INTERVAL_HOURS = 1
-FILE_RETENTION_HOURS = 24
+export FILE_OUTPUT_DIR="/tmp/log-ai"
+export CLEANUP_INTERVAL_HOURS=1
+export FILE_RETENTION_HOURS=24
+
+# Redis coordination (optional)
+export REDIS_ENABLED=false
+export REDIS_HOST="localhost"
+export REDIS_PORT=6379
+export REDIS_PASSWORD=""
+export REDIS_DB=0
+export REDIS_RETRY_DELAY=0.1
+export REDIS_MAX_RETRIES=3
+
+# Logging
+export LOG_LEVEL="INFO"  # DEBUG, INFO, WARN, ERROR
 ```
+
+### Redis Setup (Optional)
+
+Enable distributed coordination across all SSH sessions:
+
+```bash
+# Install Redis
+sudo apt update && sudo apt install -y redis-server
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+
+# Enable in config
+export REDIS_ENABLED=true
+```
+
+**Benefits:**
+- Global concurrency limits enforced across all users
+- Shared cache (500MB total) reduces duplicate searches  
+- Distributed rate limiting
+- Graceful fallback to local state if Redis fails
 
 ### Services Configuration
 
@@ -362,25 +495,35 @@ Services are defined in [`config/services.yaml`](config/services.yaml):
 
 ```yaml
 services:
-  - name: "hub-ca-api"
+  - name: "dev-ca-api"
     type: "json"
     description: "Hub CA API logs from Kinesis Firehose"
-    path_pattern: "/syslog/application_logs/{YYYY}/{MM}/{DD}/{HH}/hub-ca-api-kinesis-*"
+    path_pattern: "/syslog/application_logs/{YYYY}/{MM}/{DD}/{HH}/dev-ca-api-kinesis-*"
     path_date_formats: ["{YYYY}", "{MM}", "{DD}", "{HH}"]
-    insight_rules:
-      - patterns: ["OutOfMemoryError", "OOM"]
-        recommendation: "Check JVM memory limits and heap dump"
-        severity: "critical"
-      - patterns: ["timeout", "Timeout"]
-        recommendation: "Check service scaling and connection pools"
-        severity: "high"
 ```
 
 ---
 
 ## Monitoring & Debugging
 
-The MCP server logs all activity to stderr:
+The MCP server logs all activity to stderr and a session-specific log file in `/tmp/log-ai/{session-id}/mcp-server.log`:
+
+### Session Management
+```
+[INIT] Session log directory: /tmp/log-ai/abc123-2025-12-29
+Log level set to: INFO
+```
+
+### Redis Coordination
+```
+[REDIS] Connecting to localhost:6379...
+[REDIS] Connected successfully
+```
+or
+```
+[REDIS] Redis disabled via config
+[REDIS] Failed to connect, will use local state
+```
 
 ### Cache Operations
 ```
@@ -392,8 +535,11 @@ The MCP server logs all activity to stderr:
 
 ### Search Progress
 ```
-[REQUEST] search_logs: services=['hub-ca-api'], query='timeout', time_range={'hours_back': 2}, format=text
-[SEARCH] Searching 156 files for hub-ca-api
+[REQUEST] search_logs: services=['dev-ca-api'], query='timeout', time_range={'date': 'wednesday', 'time_range': '2 to 4pm'}, format=text
+Parsed date 'wednesday' as 2025-12-24
+Parsed time range '2 to 4pm' as 14:00 to 16:00 in America/Denver
+Timezone conversion: America/Denver 14:00 → UTC 21:00 on 2025-12-24
+[SEARCH] Searching 156 files for dev-ca-api
 [PROGRESS] 50 matches
 [PROGRESS] 120 matches
 [PROGRESS] 234 matches
@@ -402,22 +548,25 @@ The MCP server logs all activity to stderr:
 
 ### Multi-Service Progress
 ```
-[SEARCH] Searching 156 files for hub-ca-api
-[SEARCH] Searching 89 files for hub-ca-aie-service
-[PROGRESS] 120 total (hub-ca-api: 75, hub-ca-aie-service: 45)
-[PROGRESS] 280 total (hub-ca-api: 180, hub-ca-aie-service: 100)
+[SEARCH] Searching 156 files for dev-ca-api
+[SEARCH] Searching 89 files for dev-ca-rock-service
+[PROGRESS] 120 total (dev-ca-api: 75, dev-ca-rock-service: 45)
+[PROGRESS] 280 total (dev-ca-api: 180, dev-ca-rock-service: 100)
 ```
 
 ### File Operations
 ```
-[FILE] Saved 5234 matches to /tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json
+[FILE] Saved 5234 matches to /tmp/log-ai/abc123-2025-12-29/logai-search-20251229-143015-dev-ca-api-xyz789.json
+Search returned 5234 matches
+Returning preview of 50 matches (total: 5234)
 [CLEANUP] Deleted 3 old files (45.2 MB freed)
 ```
 
 ### Errors
 ```
-[ERROR] Ripgrep subprocess crashed: Broken pipe
-[ERROR] Returning partial results: 456 matches saved to /tmp/log-ai/logai-partial-...
+[ERROR] Search failed: Ripgrep subprocess crashed
+[TIMEOUT] Search auto-cancelled after 300 seconds
+[ERROR] Unexpected error: Connection reset by peer
 ```
 
 ---
@@ -448,21 +597,39 @@ This will:
 - Verify date/time range - logs may not exist for that period
 - Check path pattern in services.yaml matches actual file locations
 - Ensure server has read access to log directories
+- For time ranges: Verify timezone conversion (logs stored in UTC)
 
-### Search times out
-- Increase `AUTO_CANCEL_TIMEOUT_SECONDS` in server.py
+### Search times out (300 seconds)
+- Normal for very large result sets (10,000+ matches across many files)
+- Partial results automatically returned with timeout error
 - Use more specific query terms to reduce matches
-- Use `hours_back` instead of `days_back` for smaller time windows
+- Narrow time window with `time_range` parameter
+- Consider searching one service at a time
 
 ### Cache not working
-- Check stderr logs for cache hit/miss messages
+- Check stderr logs for `[CACHE] HIT/PUT` messages
 - Verify `CACHE_MAX_SIZE_MB` and `CACHE_MAX_ENTRIES` are reasonable
 - Cache auto-invalidates when services.yaml changes
+- Redis cache (if enabled) shared across all sessions
+
+### Files not being created
+- Files are stored in session directories: `/tmp/log-ai/{session-id}/`
+- Session ID created when MCP server starts: `abc123-2025-12-29` format
+- Check `[INIT] Session log directory:` message in stderr
+- Verify write permissions on `/tmp/log-ai/`
+- Files created for ALL searches, regardless of result count
 
 ### Large result sets slow
-- Results >1000 matches are saved to file automatically
+- All results buffered in memory during search (design choice for completeness)
+- Results >50 matches: Preview returned immediately, full file for retrieval
 - Use `read_search_file` tool to retrieve full results
 - Consider more specific queries or shorter time ranges
+
+### Redis connection issues
+- Server gracefully falls back to local state
+- Check `[REDIS]` messages in stderr for connection status
+- Verify Redis is running: `redis-cli ping` should return `PONG`
+- Check `REDIS_ENABLED=true` in config/env.sh
 
 ---
 

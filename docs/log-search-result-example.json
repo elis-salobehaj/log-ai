@@ -1,0 +1,58 @@
+[
+  {
+    "file": "/syslog/application_logs/2025/12/29/15/aws-ecs-auth-kinesis-7-2025-12-29-15-30-32-f9765eed-11b1-486b-b144-9b72ba1876d0",
+    "line": 2034,
+    "content": {
+      "timestamp": "2025-12-29T15:32:00.653519180+0000",
+      "hostname": "ip-10-160-44-43.us-west-2.compute.internal",
+      "level": "WARN",
+      "message": "Encountered status MISSING_PRIVILEGE. Missing Privileges: [super_sercret_access].",
+      "Path": "http://aws-ecs-auth.example.com/v1/validateSession?privs=super_sercret_access,edr",
+      "RequestId": "150705153999356",
+      "OriginalMethod": "GET",
+      "Ip": "52.26.160.213",
+      "dd.trace_id": "69529ef00000000012db3f8badb09b21",
+      "dd.service": "example-auth-service",
+      "dd.env": "dev",
+      "dd.version": "3.43.13.20251215.160916",
+      "dd.span_id": "593850476075599586",
+      "thread_name": "qtp585257927-7278",
+      "logger_name": "com.example.authservice.presentation.common.AuthServiceBaseResource",
+      "container_id": "ee79397da9024d19b268172c8b6aa2fa-2025563136",
+      "container_name": "aws-ecs-auth",
+      "source": "stdout",
+      "ecs_cluster": "datahub_fargate_01",
+      "ecs_task_arn": "arn:aws:ecs:us-west-2:123456789123:task/datahub_fargate_01/ee79397da9024d19b268172c8b6aa2fa",
+      "ecs_task_definition": "aws-ecs-auth:918"
+    },
+    "service": "aws-ecs-auth"
+  },
+  {
+    "file": "/syslog/application_logs/2025/12/29/15/aws-ecs-auth-kinesis-7-2025-12-29-15-30-32-f9765eed-11b1-486b-b144-9b72ba1876d0",
+    "line": 2036,
+    "content": {
+      "timestamp": "2025-12-29T15:32:00.653462601+0000",
+      "hostname": "ip-10-160-44-43.us-west-2.compute.internal",
+      "level": "WARN",
+      "message": "User number 1213071173 is missing privileges [super_sercret_access]",
+      "Path": "http://aws-ecs-auth.example.com/v1/validateSession?privs=super_sercret_access,edr",
+      "RequestId": "150705153999356",
+      "OriginalMethod": "GET",
+      "Ip": "52.26.160.213",
+      "dd.trace_id": "69529ef00000000012db3f8badb09b21",
+      "dd.service": "example-auth-service",
+      "dd.env": "dev",
+      "dd.version": "3.43.13.20251215.160916",
+      "dd.span_id": "593850476075599586",
+      "thread_name": "qtp585257927-7278",
+      "logger_name": "com.example.authservice.logic.services.PrivilegeService",
+      "container_id": "ee79397da9024d19b268172c8b6aa2fa-2025563136",
+      "container_name": "aws-ecs-auth",
+      "source": "stdout",
+      "ecs_cluster": "datahub_fargate_01",
+      "ecs_task_arn": "arn:aws:ecs:us-west-2:123456789123:task/datahub_fargate_01/ee79397da9024d19b268172c8b6aa2fa",
+      "ecs_task_definition": "aws-ecs-auth:918"
+    },
+    "service": "aws-ecs-auth"
+  }
+]

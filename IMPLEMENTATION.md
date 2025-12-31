@@ -13,7 +13,7 @@ User: "Check for timeout errors in hub services"
   ↓
 AI Agent (has LLM): Understands intent, asks clarifying questions
   ↓
-Agent calls MCP tool: search_logs(services=["hub-ca-api", "hub-ca-aie"], query="timeout")
+Agent calls MCP tool: search_logs(services=["dev-ca-api", "dev-ca-rock"], query="timeout")
   ↓
 MCP Server: Executes streaming search, returns structured results
   ↓
@@ -27,20 +27,37 @@ AI Agent: Synthesizes and presents findings to user
 - ❌ **agent.py** - Deleted (CLI agent removed, MCP only)
 - ❌ **client.py** - Deleted (not needed for server operation)
 - ❌ **fastapi, websockets, uvicorn, python-multipart** - Removed from dependencies
+- ❌ **get_insights tool** - Removed (AI agents provide superior analysis)
+- ❌ **config/env.sh** - Replaced with config/.env (standard format)
 
-### MCP Server Features (server.py - 930 lines)
+### Added
+- ✅ **config/.env** - Standard environment configuration file
+- ✅ **python-dotenv** - For loading .env files
+- ✅ **Redis coordination** - Optional distributed session management
+- ✅ **Error handling** - Strict validation for required config values
+
+### MCP Server Features (server.py)
 
 **1. Configuration System**
-```python
-CACHE_MAX_SIZE_MB = 500
-CACHE_MAX_ENTRIES = 100
-CACHE_TTL_MINUTES = 10
-MAX_PARALLEL_SEARCHES_PER_CALL = 5
-MAX_GLOBAL_SEARCHES = 10
-AUTO_CANCEL_TIMEOUT_SECONDS = 300
-MAX_IN_MEMORY_MATCHES = 1000
-FILE_OUTPUT_DIR = Path("/tmp/log-ai")
+
+Configuration is now loaded from `config/.env` file using python-dotenv:
+
+```bash
+# config/.env
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_ENABLED=true
+MAX_GLOBAL_SEARCHES=20
+MAX_PARALLEL_SEARCHES_PER_CALL=5
+CACHE_MAX_SIZE_MB=500
+CACHE_MAX_ENTRIES=100
+CACHE_TTL_MINUTES=10
+AUTO_CANCEL_TIMEOUT_SECONDS=300
+PREVIEW_MATCHES_LIMIT=50
+FILE_OUTPUT_DIR=/tmp/log-ai
 ```
+
+The config_loader.py validates all required fields and raises errors if values are missing, rather than using defaults.
 
 **2. SearchCache Class**
 - LRU eviction with size and count limits
@@ -60,9 +77,9 @@ FILE_OUTPUT_DIR = Path("/tmp/log-ai")
 - `asyncio.Semaphore` for both levels
 
 **5. File Overflow**
-- 1000 matches in-memory threshold
+- 50 matches in-memory threshold (configurable via PREVIEW_MATCHES_LIMIT)
 - Save to `/tmp/log-ai/logai-search-{timestamp}-{services}-{uuid}.json`
-- Return first 500 as preview with file path
+- Return first 50 as preview with file path
 - Agent calls `read_search_file` for full results
 
 **6. New Tool: read_search_file**
@@ -77,7 +94,7 @@ Returns saved overflow results
 **7. Multi-Service Search**
 ```json
 {
-  "service_name": ["hub-ca-api", "hub-ca-aie-service"],
+  "service_name": ["dev-ca-api", "dev-ca-rock-service"],
   "query": "timeout"
 }
 ```
@@ -107,11 +124,13 @@ Parallel execution with aggregated results
 
 ## MCP Tools
 
+LogAI exposes 2 MCP tools (reduced from 3 - get_insights was removed as AI agents provide superior analysis):
+
 ### search_logs
 **Multi-service with JSON format:**
 ```json
 {
-  "service_name": ["hub-ca-api", "hub-ca-aie-service"],
+  "service_name": ["dev-ca-api", "dev-ca-rock-service"],
   "query": "timeout",
   "hours_back": 2,
   "format": "json"
@@ -123,10 +142,10 @@ Parallel execution with aggregated results
 {
   "matches": [
     {
-      "file": "/syslog/.../hub-ca-api-kinesis-xyz.log",
+      "file": "/syslog/.../dev-ca-api-kinesis-xyz.log",
       "line": 1234,
       "content": "ERROR: Connection timeout",
-      "service": "hub-ca-api"
+      "service": "dev-ca-api"
     }
   ],
   "metadata": {
@@ -134,35 +153,9 @@ Parallel execution with aggregated results
     "duration_seconds": 6.5,
     "total_matches": 2847,
     "cached": false,
-    "services": ["hub-ca-api", "hub-ca-aie-service"],
+    "services": ["dev-ca-api", "dev-ca-rock-service"],
     "overflow": true,
-    "saved_to": "/tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json"
-  }
-}
-```
-
-### get_insights
-**With JSON format:**
-```json
-{
-  "service_name": "hub-ca-api",
-  "log_content": "ERROR: OutOfMemoryError",
-  "format": "json"
-}
-```
-
-**Response:**
-```json
-{
-  "insights": [
-    {
-      "severity": "critical",
-      "pattern": "OutOfMemoryError",
-      "recommendation": "Check JVM memory limits"
-    }
-  ],
-  "metadata": {
-    "matched_count": 1
+    "saved_to": "/tmp/log-ai/logai-search-20251211-143015-dev-ca-api-abc123.json"
   }
 }
 ```
@@ -171,7 +164,7 @@ Parallel execution with aggregated results
 **Retrieve overflow results:**
 ```json
 {
-  "file_path": "/tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json",
+  "file_path": "/tmp/log-ai/logai-search-20251211-143015-dev-ca-api-abc123.json",
   "format": "json"
 }
 ```
@@ -186,14 +179,14 @@ All activity logged to stderr with structured prefixes:
 [CACHE] Evicted LRU entry def67890 (12.1 KB)
 [CACHE] Config file changed, invalidating cache
 
-[REQUEST] search_logs: services=['hub-ca-api'], query='timeout', time_range={'hours_back': 2}
-[SEARCH] Searching 156 files for hub-ca-api
+[REQUEST] search_logs: services=['dev-ca-api'], query='timeout', time_range={'hours_back': 2}
+[SEARCH] Searching 156 files for dev-ca-api
 [PROGRESS] 50 matches
 [PROGRESS] 120 matches
-[PROGRESS] 280 total (hub-ca-api: 180, aie-service: 100)
+[PROGRESS] 280 total (dev-ca-api: 180, rock-service: 100)
 [COMPLETE] 234 matches in 4.23s
 
-[FILE] Saved 5234 matches to /tmp/log-ai/logai-search-20251211-143015-hub-ca-api-abc123.json
+[FILE] Saved 5234 matches to /tmp/log-ai/logai-search-20251211-143015-dev-ca-api-abc123.json
 [CLEANUP] Deleted 3 old files (45.2 MB freed)
 
 [ERROR] Ripgrep subprocess crashed: Broken pipe
@@ -223,8 +216,8 @@ bash scripts/deploy.sh
     "log-ai": {
       "command": "ssh",
       "args": [
-        "srt@syslog.awstst.pason.com",
-        "uv run --directory /home/srt/log-ai src/server.py"
+        "view-user@syslog.example.com",
+        "uv run --directory /home/view-user/log-ai src/server.py"
       ]
     }
   }
@@ -235,10 +228,10 @@ bash scripts/deploy.sh
 
 ### 1. Finding Errors
 ```
-User: Check for errors in hub-ca-api in the past hour
+User: Check for errors in dev-ca-api in the past hour
 
-Agent thinking: I'll search hub-ca-api logs for error patterns
-Agent calls: search_logs(service_name="hub-ca-api", query="error", hours_back=1)
+Agent thinking: I'll search dev-ca-api logs for error patterns
+Agent calls: search_logs(service_name="dev-ca-api", query="error", hours_back=1)
 
 [PROGRESS] 10 matches
 [PROGRESS] 20 matches
@@ -258,25 +251,25 @@ User: Are there timeout issues across hub services?
 
 Agent thinking: I'll search multiple hub services for timeout patterns
 Agent calls: search_logs(
-  service_name=["hub-ca-api", "hub-ca-aie-service", "hub-ca-auth"],
+  service_name=["dev-ca-api", "dev-ca-rock-service", "dev-ca-auth"],
   query="timeout",
   hours_back=4
 )
 
-[SEARCH] Searching 156 files for hub-ca-api
-[SEARCH] Searching 89 files for hub-ca-aie-service
-[SEARCH] Searching 45 files for hub-ca-auth
-[PROGRESS] 50 total (hub-ca-api: 30, aie-service: 15, auth: 5)
-[PROGRESS] 156 total (hub-ca-api: 89, aie-service: 45, auth: 22)
+[SEARCH] Searching 156 files for dev-ca-api
+[SEARCH] Searching 89 files for dev-ca-rock-service
+[SEARCH] Searching 45 files for dev-ca-auth
+[PROGRESS] 50 total (dev-ca-api: 30, rock-service: 15, auth: 5)
+[PROGRESS] 156 total (dev-ca-api: 89, rock-service: 45, auth: 22)
 [COMPLETE] 156 matches in 3.7s
 
 Agent: Found 156 timeout-related entries across 3 services:
-- hub-ca-api: 89 timeouts (57%)
-- hub-ca-aie-service: 45 timeouts (29%)
-- hub-ca-auth: 22 timeouts (14%)
+- dev-ca-api: 89 timeouts (57%)
+- dev-ca-rock-service: 45 timeouts (29%)
+- dev-ca-auth: 22 timeouts (14%)
 
-The majority occurred between 2-4 PM. Hub-ca-api appears to be the primary source.
-Would you like me to investigate what's causing the hub-ca-api timeouts?
+The majority occurred between 2-4 PM. dev-ca-api appears to be the primary source.
+Would you like me to investigate what's causing the dev-ca-api timeouts?
 ```
 
 ### 3. Large Result Sets
@@ -296,7 +289,7 @@ Agent calls: search_logs(service_name=all_services, query="ERROR", days_back=1, 
 Agent: Found 5,234 ERROR logs across 45 services today. Due to the large volume,
 I've saved the complete results. Here are the top 3 services by error count:
 
-1. hub-ca-api: 1,234 errors (24%)
+1. dev-ca-api: 1,234 errors (24%)
 2. edr-na-updater: 892 errors (17%)
 3. rig-info-server: 567 errors (11%)
 

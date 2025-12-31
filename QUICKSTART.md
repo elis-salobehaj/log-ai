@@ -1,6 +1,49 @@
 # Quick Start Guide
 
-## 1. Deploy to Remote Server
+This guide shows you how to deploy and use the LogAI MCP server with AI assistants like GitHub Copilot, Claude Desktop, or IntelliJ Junie.
+
+## Prerequisites
+
+- SSH access to the remote syslog server
+- Python 3.12+ on the remote server
+- [uv](https://docs.astral.sh/uv/) package manager on remote server
+- AI assistant that supports MCP protocol (GitHub Copilot, Claude Desktop, IntelliJ with Junie)
+
+## 1. Configure the Application
+
+Before deploying, you need to configure the server:
+
+```bash
+cd /home/ubuntu/elis_temp/github_projects/log-ai
+
+# Copy environment configuration template
+cp .env.example config/.env
+
+# Edit config/.env and set your values:
+# - SYSLOG_SERVER: Your syslog server hostname
+# - SYSLOG_USER: SSH user for deployment
+# - REDIS_HOST, REDIS_PORT: Redis settings (if using)
+# - LOG_LEVEL: DEBUG for development, INFO for production
+nano config/.env
+
+# Copy service configuration template
+cp config/services.yaml.example config/services.yaml
+
+# Edit config/services.yaml with your log file patterns:
+# Each service needs:
+# - name: Service identifier
+# - type: "json" or "syslog"
+# - description: Human-readable description
+# - path_pattern: Log file path with placeholders {YYYY}, {MM}, {DD}, {HH}
+nano config/services.yaml
+```
+
+**Important Configuration Files:**
+- `config/.env`: Environment variables (server, user, Redis, limits, logging)
+- `config/services.yaml`: Service definitions with log file patterns
+- Both files are gitignored - use the `.example` templates
+
+## 2. Deploy to Remote Server
 
 From your local machine:
 
@@ -10,235 +53,289 @@ bash scripts/deploy.sh
 ```
 
 This will:
-- ✅ Validate Python syntax
+- ✅ Load configuration from `config/.env`
+- ✅ Validate Python syntax locally
 - ✅ Copy files to remote server via SCP
 - ✅ Install dependencies with `uv sync`
 - ✅ Run tests on remote server
 
-## 2. Start WebSocket Server
+## 3. Configure AI Assistant
 
-SSH into the remote server:
+### Option A: GitHub Copilot in VS Code
 
-```bash
-ssh srt@syslog.awstst.pason.com
-cd /home/srt/log-ai
-```
+See [VSCODE_SETUP.md](VSCODE_SETUP.md) for detailed instructions.
 
-**(Optional) Enable LLM features:**
-```bash
-export OPENAI_API_KEY='sk-proj-...'
-```
+**Quick summary:**
 
-**Start the server:**
-```bash
-bash scripts/start_websocket.sh
-```
-
-You'll see output like:
-```
-============================================================
-LogAI WebSocket Server
-============================================================
-Authentication Token: abc123xyz789...
-WebSocket URL: ws://localhost:8765/ws/search?token=abc123xyz789...
-Health Check: http://localhost:8765/health
-Services: 90
-LLM Available: True
-============================================================
-```
-
-**Copy the authentication token** - you'll need it!
-
-## 3. Create SSH Tunnel
-
-From your **local machine** (where VSCode runs), open a new terminal:
-
-```bash
-ssh -L 8765:localhost:8765 srt@syslog.awstst.pason.com
-```
-
-Keep this terminal open. The tunnel forwards `localhost:8765` on your machine to the remote server.
-
-## 4. Test with WebSocket Client
-
-### Option A: Python Test Script
-
-```python
-import asyncio
-import websockets
-import json
-
-async def test_search():
-    token = "abc123xyz789..."  # Your token from step 2
-    uri = f"ws://localhost:8765/ws/search?token={token}"
-    
-    async with websockets.connect(uri) as ws:
-        # Send search request
-        await ws.send(json.dumps({
-            "type": "search",
-            "query": "find errors in hub-ca-api in the past hour"
-        }))
-        
-        # Receive responses
-        async for message in ws:
-            msg = json.loads(message)
-            print(f"{msg['type'].upper()}: {msg}")
-            
-            if msg['type'] == 'complete':
-                break
-
-asyncio.run(test_search())
-```
-
-### Option B: wscat (Command Line)
-
-Install wscat:
-```bash
-npm install -g wscat
-```
-
-Connect and query:
-```bash
-wscat -c "ws://localhost:8765/ws/search?token=abc123xyz789..."
-
-# After connecting, type:
-{"type":"search","query":"find errors in hub-ca-api"}
-```
-
-### Option C: Browser Console
-
-Open browser console (F12) and paste:
-
-```javascript
-const ws = new WebSocket('ws://localhost:8765/ws/search?token=abc123xyz789...');
-
-ws.onopen = () => {
-    console.log('Connected!');
-    ws.send(JSON.stringify({
-        type: 'search',
-        query: 'find timeout errors in hub-ca-api in the past hour'
-    }));
-};
-
-ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    console.log(msg.type + ':', msg);
-};
-```
-
-## 5. Expected Output
-
-You'll receive messages in this order:
-
-### 1. Plan Message
+1. Create workspace config (`.vscode/mcp-settings.json`):
 ```json
 {
-  "type": "plan",
-  "llm_explanation": "Searching hub-ca-api for timeout and error patterns...",
-  "services": ["hub-ca-api"],
-  "ripgrep_command": "rg -i -n -e timeout -e error <156 files>",
-  "files_count": 156
-}
-```
-
-### 2. Batch Messages (every 10 matches)
-```json
-{
-  "type": "batch",
-  "matches": [
-    {
-      "file": "/syslog/.../hub-ca-api-kinesis-xyz.log",
-      "line_number": 1234,
-      "content": "ERROR: Connection timeout",
-      "service": "hub-ca-api"
+  "mcp": {
+    "inputs": [],
+    "servers": {
+      "log-ai": {
+        "command": "ssh",
+        "args": [
+          "view-user@syslog.example.com",
+          "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
+        ]
+      }
     }
-  ],
-  "total_so_far": 10
+  }
 }
 ```
 
-### 3. Complete Message
+2. Add to user settings (`.vscode/settings.json`):
 ```json
 {
-  "type": "complete",
-  "total_matches": 234,
-  "duration_seconds": 4.52
+  "github.copilot.chat.codeGeneration.instructions": [
+    {
+      "text": "When analyzing logs, use @log-ai MCP server"
+    }
+  ]
 }
 ```
 
-## 6. Health Check
+3. Reload VS Code window
 
-Test if server is running:
+4. Chat with Copilot:
+```
+@log-ai search for timeout errors in dev-ca-api from the past 2 hours
+```
+
+### Option B: Claude Desktop
+
+1. Edit Claude config (`~/Library/Application Support/Claude/claude_desktop_config.json` on Mac):
+```json
+{
+  "mcpServers": {
+    "log-ai": {
+      "command": "ssh",
+      "args": [
+        "view-user@syslog.example.com",
+        "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
+      ]
+    }
+  }
+}
+```
+
+2. Restart Claude Desktop
+
+3. Use the log-ai tool in conversation
+
+### Option C: IntelliJ with Junie
+
+See [VSCODE_SETUP.md](VSCODE_SETUP.md) for IntelliJ configuration details.
+
+## 4. Test the Integration
+
+### Test in GitHub Copilot Chat
+
+Open Copilot Chat in VS Code and try:
+
+```
+@log-ai what services are available?
+```
+
+Expected response:
+```
+I found 90+ services including:
+- dev-ca-api
+- dev-ca-rock-service
+- awesome
+- aws-ecs-auth
+...
+```
+
+### Search for Errors
+
+```
+@log-ai search for errors in dev-ca-api from the past hour
+```
+
+Copilot will:
+1. Call the `search_logs` MCP tool
+2. Parse the structured JSON results
+3. Summarize findings in natural language
+4. Provide actionable insights
+
+### Example Conversation
+
+```
+You: @log-ai check if there are any timeout errors in hub services today
+
+Copilot: I'll search for timeout errors in hub-related services.
+
+[Copilot calls search_logs with services=["dev-ca-api", "dev-ca-rock-service"], 
+ query="timeout", date="today"]
+
+Found 47 timeout errors across hub services:
+- dev-ca-api: 32 errors
+  - Most common: "Connection timeout to database" (18 occurrences)
+  - Peak time: 14:30-15:00 UTC
+- dev-ca-rock-service: 15 errors
+  - "API timeout exceeded 30s" (15 occurrences)
+
+Would you like me to investigate the database connection issues?
+```
+
+## 5. Understanding the Tools
+
+LogAI provides 2 MCP tools:
+
+### `search_logs`
+
+Search log files with datetime filtering and multi-service support.
+
+**Parameters:**
+- `service_name`: String or array of service names
+- `query`: Search keyword or pattern
+- `date`: Optional date (e.g., "today", "yesterday", "Dec 29")
+- `hours_back`: Optional number of hours to search back
+- `minutes_back`: Optional number of minutes to search back (for surgical precision)
+- `time_range`: Optional time range (e.g., "2pm to 4pm")
+- `timezone`: Optional timezone (e.g., "America/Denver")
+- `format`: "text" (human-readable) or "json" (structured)
+
+**Returns:**
+- Structured results with file paths, line numbers, parsed content
+- Metadata: services searched, total matches, duration
+- If >50 matches: saves to file and returns preview + file path
+
+### `read_search_file`
+
+Read full results from saved search files (when search returns >50 matches).
+
+**Parameters:**
+- `file_path`: Path to saved search file
+- `format`: "text" or "json"
+
+**Returns:**
+- Full search results from the file
+
+## 6. Advanced Usage
+
+### Multi-Service Search
+
+```
+@log-ai search for "authentication failed" in aws-ecs-auth and dev-ca-api 
+from yesterday between 2pm and 4pm
+```
+
+### Large Result Sets
+
+When search finds >50 matches, LogAI automatically:
+1. Saves complete results to `/tmp/log-ai/logai-search-{timestamp}-...json`
+2. Returns preview of first 50 matches
+3. Provides file path for full results
+
+Copilot can then ask:
+```
+Show me the full results from that search
+```
+
+And it will call `read_search_file` with the path.
+
+### JSON Format for Parsing
+
+```
+@log-ai search for errors in dev-ca-api, return JSON format
+```
+
+Returns structured data that Copilot can analyze programmatically.
+
+## 7. Session Management
+
+Each MCP connection creates a unique session:
+- Session ID format: `abc123-2025-12-31`
+- Session logs: `/tmp/log-ai/{session-id}/mcp-server.log`
+- Search results: `/tmp/log-ai/logai-search-*.json`
+
+Files are automatically cleaned up after 24 hours.
+
+## 8. Runtime Configuration
+
+Edit `config/.env` on the remote server to adjust:
 
 ```bash
-curl http://localhost:8765/health
+# Global Limits
+MAX_GLOBAL_SEARCHES=20
+MAX_PARALLEL_SEARCHES_PER_CALL=5
+
+# Cache Configuration
+CACHE_MAX_SIZE_MB=500
+CACHE_TTL_MINUTES=10
+
+# Search Limits
+AUTO_CANCEL_TIMEOUT_SECONDS=300
+PREVIEW_MATCHES_LIMIT=50
+
+# Logging
+LOG_LEVEL=DEBUG  # Set to INFO for production
 ```
 
-Response:
-```json
-{
-  "status": "healthy",
-  "connections": 0,
-  "services": 90,
-  "llm_available": true,
-  "cache_size": 0
-}
-```
+After changing config, restart the MCP server (close and reopen AI assistant connection).
 
 ## Troubleshooting
 
-### "Connection refused"
-- ✅ Is the WebSocket server running? Check SSH session
-- ✅ Is the SSH tunnel active? Check local terminal
-- ✅ Correct port? Should be 8765
+### "Cannot connect to server"
+- ✅ Verify SSH connection: `ssh view-user@syslog.example.com`
+- ✅ Check uv is installed: `ssh view-user@syslog.example.com "which uv"`
+- ✅ Verify deployment: `ssh view-user@syslog.example.com "ls -la ~/log-ai"`
 
-### "Invalid authentication token"
-- ✅ Copy token from server startup output
-- ✅ Include in URL: `?token=...`
-- ✅ Token changes on server restart
+### "Tool not available"
+- ✅ Reload VS Code window (Cmd/Ctrl + Shift + P → "Reload Window")
+- ✅ Check MCP settings file syntax (valid JSON)
+- ✅ Restart Claude Desktop or IntelliJ
 
-### "Rate limit exceeded"
-- ⏱️ Wait 60 seconds
-- 📊 Limit: 10 queries per minute per connection
+### "Configuration error"
+- ✅ Ensure `config/.env` exists on remote server
+- ✅ Check all required values are set in `.env`
+- ✅ Review session logs: `tail -f /tmp/log-ai/{session-id}/mcp-server.log`
 
-### "Search already in progress"
-- ⏳ Wait for current search to complete
-- ❌ Or send `{"type": "cancel"}` first
-
-### "LLM available: False"
-- ⚠️ OPENAI_API_KEY not set
-- 🔄 Server falls back to rule-based parsing
-- ✅ Still works, just less intelligent
+### Slow searches
+- ✅ Enable Redis coordination (see README.md)
+- ✅ Reduce search scope (specific services, shorter time ranges)
+- ✅ Check `CACHE_MAX_SIZE_MB` in config/.env
 
 ## Next Steps
 
-### Build VSCode Extension
+- **GitHub Copilot**: See [VSCODE_SETUP.md](VSCODE_SETUP.md) for detailed integration
+- **Architecture**: See [README.md](README.md) for system design and Redis coordination
+- **Development**: See [IMPLEMENTATION.md](IMPLEMENTATION.md) for technical details
 
-Now that the backend works, create a VSCode extension that:
-1. Spawns SSH tunnel automatically
-2. Connects to WebSocket with token from settings
-3. Shows results in TreeView
-4. Provides cancel/progress UI
+## Example Use Cases
 
-### Advanced Usage
+### 1. Service Health Check
+```
+@log-ai check for errors in awesome services in the last 2 hours
+```
 
-See [WEBSOCKET_PROTOCOL.md](WEBSOCKET_PROTOCOL.md) for:
-- Complete message protocol
-- Cancellation
-- Caching behavior
-- Rate limiting details
-- Connection lifecycle
+### 2. Surgical Precision Search (Production)
+```
+@log-ai search for errors in dev-ca-api from the last 10 minutes
+```
 
-### More Examples
+### 3. Authentication Investigation
+```
+@log-ai search for "missing privilege" in aws-ecs-auth today
+```
 
-See [README.md](README.md) for:
-- WebSocket API examples
-- MCP server usage (legacy)
-- Configuration options
+### 3. Performance Analysis
+```
+@log-ai find timeout and latency warnings in hub services from 2pm to 4pm yesterday
+```
 
----
+### 4. Multi-Service Correlation
+```
+@log-ai search for errors in dev-ca-api and dev-ca-rock-service 
+with trace ID "69529ef00000000012db3f8badb09b21"
+```
 
-**Questions?** Check the documentation:
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) - What was built and why
-- [WEBSOCKET_PROTOCOL.md](WEBSOCKET_PROTOCOL.md) - API reference
-- [README.md](README.md) - User guide
+The AI assistant will intelligently:
+- Parse your natural language request
+- Extract relevant parameters (services, query, datetime)
+- Call the appropriate MCP tools
+- Synthesize findings into actionable insights
+- Suggest follow-up investigations
