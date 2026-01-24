@@ -14,15 +14,16 @@
 
 | Plan | Status | Priority | Last Updated | Progress | Related Files |
 |------|--------|----------|--------------|----------|---------------|
-| [MCP Observability Completion](plans/active/mcp-observability-completion.md) | **Active** | 🔴 High | 2026-01-24 | 33% (3/9 tasks) | server.py, config_loader.py, datadog_integration.py, metrics_collector.py |
+| [MCP Observability Completion](plans/active/mcp-observability-completion.md) | **Active** | 🔴 High | 2026-01-24 | 44% (4/9 tasks) | server.py, config_loader.py, datadog_integration.py, metrics_collector.py, infrastructure_monitoring.py |
 
 **Current Focus**: 
 - Phase 3.1: Datadog SDK Integration ✅ **COMPLETE**
 - Phase 3.2: APM Tracing Implementation ✅ **COMPLETE**
 - Phase 3.3: Metrics Collection ✅ **COMPLETE**
-- Next up: Phase 3.4 - Infrastructure Monitoring
+- Phase 3.4: Infrastructure Monitoring ✅ **COMPLETE**
+- Next up: Phase 3.5 - Log Aggregation
 - Phases 1-2 COMPLETE ✅: Redis coordination + Sentry integration
-- 72/72 tests passing (31 existing + 10 Datadog SDK + 15 APM tracing + 26 metrics collection)
+- 98/98 tests passing (31 existing + 10 Datadog SDK + 15 APM + 26 metrics + 26 infrastructure)
 
 ---
 

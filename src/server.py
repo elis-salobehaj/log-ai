@@ -46,6 +46,10 @@ from metrics_collector import (
     get_metrics_collector,
     MetricsCollector
 )
+from infrastructure_monitoring import (
+    get_infrastructure_monitor,
+    InfrastructureMonitor
+)
 
 # =============================================================================
 # CONFIGURATION - Load from environment variables
@@ -942,10 +946,13 @@ def format_matches_json(matches: List[Dict], metadata: Dict) -> str:
 
 async def metrics_monitoring_task():
     """
-    Background task to periodically report infrastructure metrics (Phase 3.3).
-    Monitors Redis connection pool status every 60 seconds.
+    Background task to periodically report infrastructure metrics (Phase 3.3 & 3.4).
+    Monitors Redis connection pool and system infrastructure every 60 seconds.
     """
     sys.stderr.write("[METRICS] Starting metrics monitoring task\n")
+    
+    # Initialize infrastructure monitor (Phase 3.4)
+    infra_monitor = get_infrastructure_monitor(log_dir=LOG_DIR)
     
     while True:
         try:
@@ -953,7 +960,7 @@ async def metrics_monitoring_task():
             
             metrics = get_metrics_collector()
             
-            # Report Redis connection pool if available
+            # Report Redis connection pool if available (Phase 3.3)
             if redis_connected and redis_coordinator and redis_coordinator.redis:
                 try:
                     # Get connection pool info from Redis client
@@ -969,6 +976,26 @@ async def metrics_monitoring_task():
                         sys.stderr.write(f"[METRICS] Redis pool: {active}/{max_connections} active\n")
                 except Exception as e:
                     sys.stderr.write(f"[METRICS] Failed to get Redis pool stats: {e}\n")
+            
+            # Collect and report infrastructure metrics (Phase 3.4)
+            try:
+                sys_metrics = infra_monitor.collect_metrics()
+                infra_monitor.report_to_datadog(sys_metrics)
+                
+                # Monitor log directory
+                log_stats = infra_monitor.monitor_log_directory()
+                if log_stats:
+                    sys.stderr.write(f"[METRICS] Log directory: {log_stats['file_count']} files, {log_stats['total_size_mb']:.2f} MB\n")
+                
+                # Get health summary
+                health = infra_monitor.get_health_summary()
+                if health['status'] != 'healthy':
+                    sys.stderr.write(f"[METRICS] System health: {health['status']} - {', '.join(health['issues'])}\n")
+                
+                sys.stderr.write(f"[METRICS] System: CPU {sys_metrics.cpu_percent:.1f}%, Memory {sys_metrics.memory_percent:.1f}%, Disk {sys_metrics.disk_percent:.1f}%\n")
+                sys.stderr.write(f"[METRICS] Process: {sys_metrics.process_memory_mb:.1f} MB, {sys_metrics.process_threads} threads\n")
+            except Exception as e:
+                sys.stderr.write(f"[METRICS] Failed to collect infrastructure metrics: {e}\n")
             
         except Exception as e:
             sys.stderr.write(f"[METRICS] Error in monitoring task: {e}\n")
