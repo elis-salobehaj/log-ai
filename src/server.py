@@ -35,6 +35,13 @@ from sentry_integration import (
     set_user_context,
     get_sentry_api
 )
+from datadog_integration import (
+    init_datadog,
+    trace_search_operation,
+    record_metric,
+    increment_counter,
+    is_configured as is_datadog_configured
+)
 
 # =============================================================================
 # CONFIGURATION - Load from environment variables
@@ -288,6 +295,9 @@ redis_connected: bool = False
 # Sentry error tracking (initialized on startup)
 sentry_enabled: bool = False
 
+# Datadog APM and metrics (Phase 3 - initialized on startup)
+datadog_enabled: bool = False
+
 
 async def init_redis():
     """Initialize Redis connection for distributed coordination"""
@@ -340,6 +350,34 @@ def init_sentry_on_startup():
         sys.stderr.write("[SENTRY] Error tracking enabled\n")
     else:
         sys.stderr.write("[SENTRY] Error tracking disabled (SENTRY_DSN not configured)\n")
+
+
+def init_datadog_on_startup():
+    """Initialize Datadog APM and metrics (Phase 3)"""
+    global datadog_enabled
+    
+    # Check if Datadog is configured
+    if not config.dd_configured:
+        sys.stderr.write("[DATADOG] Not configured (DD_ENABLED=false or missing credentials)\n")
+        return
+    
+    sys.stderr.write("[DATADOG] Initializing APM and metrics...\n")
+    datadog_enabled = init_datadog(
+        api_key=config.dd_api_key,
+        app_key=config.dd_app_key,
+        site=config.dd_site,
+        service_name=config.dd_service_name,
+        env=config.dd_env,
+        version=config.dd_version,
+        agent_host=config.dd_agent_host,
+        agent_port=config.dd_agent_port,
+        trace_agent_port=config.dd_trace_agent_port
+    )
+    
+    if datadog_enabled:
+        sys.stderr.write(f"[DATADOG] Enabled: service={config.dd_service_name}, env={config.dd_env}\n")
+    else:
+        sys.stderr.write("[DATADOG] Initialization failed, continuing without APM/metrics\n")
 
 
 def get_search_semaphore():
@@ -906,6 +944,9 @@ async def main():
     # Initialize Sentry first (synchronous)
     init_sentry_on_startup()
     
+    # Initialize Datadog APM and metrics (Phase 3)
+    init_datadog_on_startup()
+    
     # Initialize Redis (if enabled)
     await init_redis()
     
@@ -924,6 +965,7 @@ async def main():
     sys.stderr.write(f"[SERVER] Cache: {CACHE_MAX_ENTRIES} entries, {CACHE_MAX_SIZE_MB} MB, {CACHE_TTL_MINUTES} min TTL\n")
     sys.stderr.write(f"[SERVER] Concurrency: {MAX_PARALLEL_SEARCHES_PER_CALL} per call, {MAX_GLOBAL_SEARCHES} global\n")
     sys.stderr.write(f"[SERVER] Redis: {'Enabled' if redis_connected else 'Disabled (using local state)'}\n")
+    sys.stderr.write(f"[SERVER] Datadog: {'Enabled' if datadog_enabled else 'Disabled'}\n")
 
     @server.list_resources()
     async def handle_list_resources() -> list[types.Resource]:
