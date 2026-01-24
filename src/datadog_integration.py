@@ -13,6 +13,8 @@ Architecture:
 
 CRITICAL: Never write to stdout (corrupts MCP JSON-RPC protocol)
 Use sys.stderr or logging for all debug output.
+
+Configuration: Uses Pydantic Settings (config_loader.py), NOT environment variables.
 """
 
 import sys
@@ -22,7 +24,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 # Datadog SDK imports
-from ddtrace import tracer, patch_all
+from ddtrace import tracer, patch_all, config as ddtrace_config
 from datadog import initialize as dd_initialize, statsd
 from datadog_api_client import ApiClient, Configuration
 from datadog_api_client.v2.api.logs_api import LogsApi
@@ -87,6 +89,11 @@ def init_datadog(
         sys.stderr.write("[DATADOG] Already initialized\n")
         return True
     
+    # Validate required credentials
+    if not api_key or not app_key:
+        sys.stderr.write("[DATADOG] Missing credentials (api_key or app_key)\n")
+        return False
+    
     try:
         # Store configuration for later use
         _config = {
@@ -111,18 +118,18 @@ def init_datadog(
         _statsd_client = statsd
         sys.stderr.write(f"[DATADOG] StatsD client initialized: {agent_host}:{agent_port}\n")
         
-        # 2. Configure APM tracer
-        tracer.configure(
-            hostname=agent_host,
-            port=trace_agent_port,
-            service=service_name,
-            env=env,
-            version=version,
-        )
+        # 2. Configure APM tracer using ddtrace.config (no environment variables)
+        ddtrace_config.service = service_name
+        ddtrace_config.env = env
+        ddtrace_config.version = version
+        
+        # Configure agent URL programmatically
+        tracer._agent_url = f"http://{agent_host}:{trace_agent_port}"
+        
+        _tracer = tracer
         
         # 3. Auto-instrument async libraries
         patch_all(asyncio=True, redis=True)
-        _tracer = tracer
         sys.stderr.write(f"[DATADOG] APM tracer configured: service={service_name}, env={env}\n")
         
         # 4. Initialize API client for queries
@@ -258,6 +265,16 @@ def increment_counter(
 def is_configured() -> bool:
     """Check if Datadog is initialized"""
     return _initialized
+
+
+def _reset_for_testing() -> None:
+    """Reset module state (for testing only)"""
+    global _initialized, _tracer, _statsd_client, _api_client, _config
+    _initialized = False
+    _tracer = None
+    _statsd_client = None
+    _api_client = None
+    _config = None
 
 
 def get_api_client() -> Optional[ApiClient]:

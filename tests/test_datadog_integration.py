@@ -9,8 +9,17 @@ from src.datadog_integration import (
     trace_search_operation,
     record_metric,
     query_apm_traces,
-    query_metrics
+    query_metrics,
+    _reset_for_testing
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_datadog_state():
+    """Reset Datadog module state before each test"""
+    _reset_for_testing()
+    yield
+    _reset_for_testing()
 
 
 def test_datadog_disabled_by_default():
@@ -26,10 +35,10 @@ def test_datadog_disabled_by_default():
 
 
 @patch('src.datadog_integration.dd_initialize')
-@patch('src.datadog_integration.tracer')
+@patch('src.datadog_integration.patch_all')
 @patch('src.datadog_integration.ApiClient')
 @patch('src.datadog_integration.Configuration')
-def test_datadog_initialization(mock_config, mock_api_client, mock_tracer, mock_dd_init):
+def test_datadog_initialization(mock_config, mock_api_client, mock_patch_all, mock_dd_init):
     """Test successful Datadog initialization with all components"""
     # Setup mocks
     mock_api_instance = MagicMock()
@@ -54,8 +63,8 @@ def test_datadog_initialization(mock_config, mock_api_client, mock_tracer, mock_
     # Verify dd_initialize was called (for StatsD)
     mock_dd_init.assert_called_once()
     
-    # Verify tracer was configured
-    mock_tracer.configure.assert_called_once()
+    # Verify patch_all was called for auto-instrumentation
+    mock_patch_all.assert_called_once_with(asyncio=True, redis=True)
 
 
 @patch('src.datadog_integration._initialized', True)
