@@ -42,6 +42,10 @@ from datadog_integration import (
     increment_counter,
     is_configured as is_datadog_configured
 )
+from metrics_collector import (
+    get_metrics_collector,
+    MetricsCollector
+)
 
 # =============================================================================
 # CONFIGURATION - Load from environment variables
@@ -936,6 +940,41 @@ def format_matches_json(matches: List[Dict], metadata: Dict) -> str:
     return json.dumps(result, indent=2)
 
 
+async def metrics_monitoring_task():
+    """
+    Background task to periodically report infrastructure metrics (Phase 3.3).
+    Monitors Redis connection pool status every 60 seconds.
+    """
+    sys.stderr.write("[METRICS] Starting metrics monitoring task\n")
+    
+    while True:
+        try:
+            await asyncio.sleep(60)  # Report every 60 seconds
+            
+            metrics = get_metrics_collector()
+            
+            # Report Redis connection pool if available
+            if redis_connected and redis_coordinator and redis_coordinator.redis:
+                try:
+                    # Get connection pool info from Redis client
+                    pool = redis_coordinator.redis.connection_pool
+                    if hasattr(pool, '_available_connections') and hasattr(pool, '_created_connections'):
+                        active = len(pool._created_connections) - len(pool._available_connections)
+                        max_connections = pool.max_connections if hasattr(pool, 'max_connections') else 50
+                        
+                        metrics.report_redis_pool_status(
+                            active_connections=active,
+                            max_connections=max_connections
+                        )
+                        sys.stderr.write(f"[METRICS] Redis pool: {active}/{max_connections} active\n")
+                except Exception as e:
+                    sys.stderr.write(f"[METRICS] Failed to get Redis pool stats: {e}\n")
+            
+        except Exception as e:
+            sys.stderr.write(f"[METRICS] Error in monitoring task: {e}\n")
+            # Continue running even if error occurs
+
+
 # =============================================================================
 # MAIN SERVER
 # =============================================================================
@@ -955,6 +994,9 @@ async def main():
     
     # Start cleanup task
     cleanup_task = asyncio.create_task(cleanup_old_files_task())
+    
+    # Start metrics monitoring task (Phase 3.3)
+    metrics_task = asyncio.create_task(metrics_monitoring_task())
     
     config = load_config()
     server = Server("log-ai")
@@ -1228,6 +1270,14 @@ Service name supports flexible matching:
                     span.set_tag("error", True)
                     span.set_tag("error.type", type(e).__name__)
                     span.set_tag("error.message", str(e))
+                
+                # Record error metrics (Phase 3.3)
+                metrics = get_metrics_collector()
+                metrics.record_error(
+                    error_type=type(e).__name__,
+                    service=services[0] if services else None
+                )
+                
                 raise
     
     async def _execute_search(
@@ -1255,12 +1305,18 @@ Service name supports flexible matching:
         # Get cache instance (Redis or local)
         cache = get_search_cache()
         
+        # Get metrics collector (Phase 3.3)
+        metrics = get_metrics_collector()
+        
         # Check cache
         cached = cache.get(services, query, time_range)
         if cached:
             matches, metadata = cached
             metadata["cached"] = True
             metadata["duration_seconds"] = time.time() - start_time
+            
+            # Record cache hit metrics (Phase 3.3)
+            metrics.record_cache_hit(services[0] if services else "unknown")
             
             # Add Datadog APM tags for cache hit (Phase 3.2)
             if span:
@@ -1304,6 +1360,14 @@ Service name supports flexible matching:
         
         # Get semaphore instance (Redis or local)
         search_semaphore = get_search_semaphore()
+        
+        # Report semaphore utilization before acquiring (Phase 3.3)
+        if isinstance(search_semaphore, asyncio.Semaphore):
+            # Local semaphore - report available slots
+            metrics.report_semaphore_utilization(
+                available_slots=search_semaphore._value,
+                max_slots=MAX_GLOBAL_SEARCHES
+            )
         
         # Acquire global semaphore
         async with search_semaphore:
@@ -1383,6 +1447,13 @@ Service name supports flexible matching:
                 # Cache if successful and not too large
                 if not error_occurred and not metadata.get("overflow"):
                     cache.put(services, query, time_range, all_matches, metadata)
+                
+                # Record cache miss and overflow metrics (Phase 3.3)
+                metrics.record_cache_miss(services[0] if services else "unknown")
+                if metadata.get("overflow"):
+                    metrics.record_overflow(services[0] if services else "unknown")
+                if error_occurred:
+                    metrics.record_timeout(services[0] if services else "unknown")
                 
                 # Add Datadog APM tags (Phase 3.2)
                 if span:
