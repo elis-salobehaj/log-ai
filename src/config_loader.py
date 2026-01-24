@@ -1,142 +1,105 @@
 """
 Configuration loader for log-ai MCP server.
-Loads settings from config/.env file.
+Loads settings from config/.env file using Pydantic v2.
 """
 import os
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
+from pydantic import Field, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Config:
+class Config(BaseSettings):
     """Central configuration for log-ai MCP server"""
     
+    model_config = SettingsConfigDict(
+        env_file='config/.env',
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore'
+    )
+    
+    # Organization Configuration
+    org_domain: str = Field(default="example.com", description="Organization domain name")
+    org_name: str = Field(default="example", description="Organization name")
+    
     # Redis Configuration
-    REDIS_HOST: str
-    REDIS_PORT: int
-    REDIS_DB: int
-    REDIS_MAX_MEMORY: str
-    REDIS_PERSISTENCE: bool
-    REDIS_ENABLED: bool
+    redis_host: str = Field(default="localhost")
+    redis_port: int = Field(default=6379)
+    redis_password: Optional[str] = Field(default=None)
+    redis_db: int = Field(default=0)
+    redis_max_memory: str = Field(default="500mb")
+    redis_persistence: bool = Field(default=False)
+    redis_enabled: bool = Field(default=True)
+    redis_retry_delay: float = Field(default=0.5)
+    redis_max_retries: int = Field(default=100)
     
     # Global Concurrency Limits
-    MAX_GLOBAL_SEARCHES: int
-    MAX_PARALLEL_SEARCHES_PER_CALL: int
+    max_global_searches: int = Field(default=20)
+    max_parallel_searches_per_call: int = Field(default=5)
     
     # Cache Configuration
-    CACHE_MAX_SIZE_MB: int
-    CACHE_MAX_ENTRIES: int
-    CACHE_TTL_MINUTES: int
+    cache_max_size_mb: int = Field(default=500)
+    cache_max_entries: int = Field(default=100)
+    cache_ttl_minutes: int = Field(default=10)
     
     # Search Limits
-    AUTO_CANCEL_TIMEOUT_SECONDS: int
-    MAX_IN_MEMORY_MATCHES: int
+    auto_cancel_timeout_seconds: int = Field(default=300)
+    preview_matches_limit: int = Field(default=50)
     
     # File Output
-    FILE_RETENTION_HOURS: int
-    CLEANUP_INTERVAL_HOURS: int
+    file_output_dir: str = Field(default="/tmp/log-ai")
+    file_retention_hours: int = Field(default=24)
+    cleanup_interval_hours: int = Field(default=1)
     
     # Logging
-    LOG_LEVEL: str
-    LOG_FORMAT: str
+    log_level: str = Field(default="INFO")
+    log_format: str = Field(default="text")
     
-    # Sentry Configuration (for future use)
-    SENTRY_DSN: Optional[str]
-    SENTRY_TRACES_SAMPLE_RATE: float
-    SENTRY_PROFILES_SAMPLE_RATE: float
-    SENTRY_ALERT_TEAMS_WEBHOOK: Optional[str]
-    SENTRY_ALERT_SLACK_WEBHOOK: Optional[str]
+    # Remote Server Configuration
+    syslog_server: Optional[str] = Field(default=None)
+    syslog_user: Optional[str] = Field(default=None)
     
-    # Datadog Configuration (for future use)
-    DD_API_KEY: Optional[str]
-    DD_APP_KEY: Optional[str]
-    DD_SITE: str
+    # Sentry Configuration (Optional)
+    sentry_url: Optional[str] = Field(default=None)
+    sentry_dsn: Optional[str] = Field(default=None)
+    sentry_auth_token: Optional[str] = Field(default=None)
+    sentry_environment: str = Field(default="qa")
+    sentry_traces_sample_rate: float = Field(default=1.0)
+    sentry_profiles_sample_rate: float = Field(default=0.1)
+    sentry_alert_teams_webhook: Optional[str] = Field(default=None)
+    sentry_alert_slack_webhook: Optional[str] = Field(default=None)
     
-    def __init__(self):
-        """Load configuration from config/.env file"""
-        
-        # Locate the .env file (should be in config/ relative to project root)
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parent.parent  # Go up from src/ to project root
-        env_file = project_root / "config" / ".env"
-        
-        if not env_file.exists():
-            raise FileNotFoundError(
-                f"Configuration file not found: {env_file}\n"
-                f"Please create config/.env file with required settings."
-            )
-        
-        # Load environment variables from .env file
-        load_dotenv(env_file)
-        
-        # Redis Configuration - Required
-        self.REDIS_HOST = self._get_required("REDIS_HOST")
-        self.REDIS_PORT = int(self._get_required("REDIS_PORT"))
-        self.REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD")  # Optional
-        self.REDIS_DB = int(self._get_required("REDIS_DB"))
-        self.REDIS_MAX_MEMORY = self._get_required("REDIS_MAX_MEMORY")
-        self.REDIS_PERSISTENCE = self._get_bool("REDIS_PERSISTENCE")
-        self.REDIS_ENABLED = self._get_bool("REDIS_ENABLED")
-        self.REDIS_RETRY_DELAY = float(self._get_required("REDIS_RETRY_DELAY"))
-        self.REDIS_MAX_RETRIES = int(self._get_required("REDIS_MAX_RETRIES"))
-        
-        # Global Concurrency Limits - Required
-        self.MAX_GLOBAL_SEARCHES = int(self._get_required("MAX_GLOBAL_SEARCHES"))
-        self.MAX_PARALLEL_SEARCHES_PER_CALL = int(self._get_required("MAX_PARALLEL_SEARCHES_PER_CALL"))
-        
-        # Cache Configuration - Required
-        self.CACHE_MAX_SIZE_MB = int(self._get_required("CACHE_MAX_SIZE_MB"))
-        self.CACHE_MAX_ENTRIES = int(self._get_required("CACHE_MAX_ENTRIES"))
-        self.CACHE_TTL_MINUTES = int(self._get_required("CACHE_TTL_MINUTES"))
-        
-        # Search Limits - Required
-        self.AUTO_CANCEL_TIMEOUT_SECONDS = int(self._get_required("AUTO_CANCEL_TIMEOUT_SECONDS"))
-        self.PREVIEW_MATCHES_LIMIT = int(self._get_required("PREVIEW_MATCHES_LIMIT"))
-        
-        # File Output - Required
-        self.FILE_OUTPUT_DIR = self._get_required("FILE_OUTPUT_DIR")
-        self.FILE_RETENTION_HOURS = int(self._get_required("FILE_RETENTION_HOURS"))
-        self.CLEANUP_INTERVAL_HOURS = int(self._get_required("CLEANUP_INTERVAL_HOURS"))
-        
-        # Logging - Required
-        self.LOG_LEVEL = self._get_required("LOG_LEVEL")
-        self.LOG_FORMAT = self._get_required("LOG_FORMAT")
-        
-        # Sentry Configuration - Optional
-        self.SENTRY_DSN = os.environ.get("SENTRY_DSN")
-        self.SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
-        self.SENTRY_PROFILES_SAMPLE_RATE = float(os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "0.1"))
-        self.SENTRY_ALERT_TEAMS_WEBHOOK = os.environ.get("SENTRY_ALERT_TEAMS_WEBHOOK")
-        self.SENTRY_ALERT_SLACK_WEBHOOK = os.environ.get("SENTRY_ALERT_SLACK_WEBHOOK")
-        
-        # Datadog Configuration - Optional
-        self.DD_API_KEY = os.environ.get("DD_API_KEY")
-        self.DD_APP_KEY = os.environ.get("DD_APP_KEY")
-        self.DD_SITE = os.environ.get("DD_SITE", "datadoghq.com")
+    # Datadog Configuration (Optional)
+    dd_api_key: Optional[str] = Field(default=None)
+    dd_app_key: Optional[str] = Field(default=None)
+    dd_site: str = Field(default="datadoghq.com")
     
-    def _get_required(self, key: str) -> str:
-        """Get a required environment variable, raise error if missing"""
-        value = os.environ.get(key)
-        if value is None or value == "":
-            raise ValueError(
-                f"Required configuration '{key}' is missing in config/.env file"
-            )
-        return value
+    @computed_field
+    @property
+    def computed_sentry_url(self) -> str:
+        """Compute Sentry URL from org_domain if not explicitly set"""
+        if self.sentry_url:
+            return self.sentry_url
+        return f"https://sentry.{self.org_domain}"
     
-    def _get_bool(self, key: str) -> bool:
-        """Get a boolean environment variable, raise error if missing"""
-        value = self._get_required(key)
-        return value.lower() in ("true", "1", "yes")
-    
+    @computed_field
+    @property
+    def computed_syslog_server(self) -> str:
+        """Compute syslog server from org_domain if not explicitly set"""
+        if self.syslog_server:
+            return self.syslog_server
+        return f"syslog.{self.org_domain}"
     def __repr__(self) -> str:
         """String representation (hide sensitive values)"""
         return (
             f"Config(\n"
-            f"  Redis: {self.REDIS_HOST}:{self.REDIS_PORT} (enabled={self.REDIS_ENABLED})\n"
-            f"  Max Global Searches: {self.MAX_GLOBAL_SEARCHES}\n"
-            f"  Cache: {self.CACHE_MAX_SIZE_MB}MB, {self.CACHE_MAX_ENTRIES} entries, {self.CACHE_TTL_MINUTES}min TTL\n"
-            f"  Sentry: {'enabled' if self.SENTRY_DSN else 'disabled'}\n"
-            f"  Datadog: {'enabled' if self.DD_API_KEY else 'disabled'}\n"
+            f"  Organization: {self.org_name} ({self.org_domain})\n"
+            f"  Redis: {self.redis_host}:{self.redis_port} (enabled={self.redis_enabled})\n"
+            f"  Max Global Searches: {self.max_global_searches}\n"
+            f"  Cache: {self.cache_max_size_mb}MB, {self.cache_max_entries} entries, {self.cache_ttl_minutes}min TTL\n"
+            f"  Sentry: {self.computed_sentry_url} ({'enabled' if self.sentry_dsn else 'disabled'})\n"
+            f"  Datadog: {'enabled' if self.dd_api_key else 'disabled'}\n"
             f")"
         )
 

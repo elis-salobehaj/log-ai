@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "log-ai": {
+      "command": "ssh",
+      "args": [
+        "user@syslog.example.com",
+        "LOG_LEVEL=DEBUG ~/.local/bin/uv run --directory /home/user/log-ai src/server.py"
+      ],
+      "type": "stdio"
+    }
+  }
+}

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Test date parsing and timezone conversion features
+Search dev-ca-awesome-service for OOM errors on Dec 14, 2025
 """
 import asyncio
 import json
 import os
 import sys
 from datetime import datetime
+import pytest
 
 async def print_stderr(stream):
     """Print stderr output as it comes"""
@@ -17,7 +18,9 @@ async def print_stderr(stream):
         sys.stderr.write(line.decode())
         sys.stderr.flush()
 
-async def test_date_search():
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_search():
     # Configuration from environment (required)
     syslog_user = os.environ.get("SYSLOG_USER")
     syslog_server = os.environ.get("SYSLOG_SERVER")
@@ -62,7 +65,7 @@ async def test_date_search():
         
         # Read init response
         response = await proc.stdout.readline()
-        print(f"Init response received", file=sys.stderr)
+        print(f"Init response: {response.decode().strip()}", file=sys.stderr)
         
         # 2. Send initialized notification
         initialized = {
@@ -72,9 +75,12 @@ async def test_date_search():
         proc.stdin.write((json.dumps(initialized) + "\n").encode())
         await proc.stdin.drain()
         
-        # 3. Test date parsing with time range
-        # Search for logs on Sunday (Dec 15, 2025) from 2pm to 4pm MST
-        # MST is UTC-7, so 2pm MST = 21:00 UTC (Dec 15)
+        # 3. Call search_logs tool with UTC timestamps
+        # Search for errors in the last 30 minutes (smaller window for testing)
+        from datetime import datetime, timedelta
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(minutes=30)
+        
         search_request = {
             "jsonrpc": "2.0",
             "id": 2,
@@ -82,22 +88,22 @@ async def test_date_search():
             "params": {
                 "name": "search_logs",
                 "arguments": {
-                    "service_name": "dev-ca-awesome-service",
-                    "query": "error",
-                    "date": "Sunday",  # Dec 15, 2025
-                    "time_range": "2 to 4pm",
-                    "timezone": "America/Denver",  # MST
+                    "service_name": "hub-ca-auth",
+                    "query": "error|exception|failed",
+                    "start_time_utc": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end_time_utc": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "format": "json"
                 }
             }
         }
         
-        print(f"\n=== Test: Search Sunday 2-4pm MST (should convert to UTC 21:00-23:00) ===\n", file=sys.stderr)
+        print(f"\nSearching hub-ca-auth for errors from {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')} UTC...\n", file=sys.stderr)
         
         proc.stdin.write((json.dumps(search_request) + "\n").encode())
         await proc.stdin.drain()
         
         # Read search response
+        print("\n=== Search Results ===\n")
         response = await proc.stdout.readline()
         result = json.loads(response.decode())
         
@@ -105,51 +111,23 @@ async def test_date_search():
             for content in result["result"]["content"]:
                 if content["type"] == "text":
                     data = json.loads(content["text"])
-                    print(f"\n✓ Search completed:")
-                    print(f"  Total matches: {data['metadata']['total_matches']}")
-                    print(f"  Files searched: {data['metadata']['files_searched']}")
-                    print(f"  Duration: {data['metadata']['duration_seconds']:.2f}s")
-                    print(f"  Services: {data['metadata'].get('services', 'N/A')}")
+                    print(f"\nFound {len(data.get('matches', []))} matches", file=sys.stderr)
                     
-        # 4. Test specific date
-        search_request2 = {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "search_logs",
-                "arguments": {
-                    "service_name": "dev-ca-awesome-service",
-                    "query": "error",
-                    "date": "Dec 14 2025",
-                    "format": "json"
-                }
-            }
-        }
-        
-        print(f"\n=== Test: Search specific date Dec 14, 2025 (all hours) ===\n", file=sys.stderr)
-        
-        proc.stdin.write((json.dumps(search_request2) + "\n").encode())
-        await proc.stdin.drain()
-        
-        response = await proc.stdout.readline()
-        result = json.loads(response.decode())
-        
-        if "result" in result:
-            for content in result["result"]["content"]:
-                if content["type"] == "text":
-                    data = json.loads(content["text"])
-                    print(f"\n✓ Search completed:")
-                    print(f"  Total matches: {data['metadata']['total_matches']}")
-                    print(f"  Files searched: {data['metadata']['files_searched']}")
-                    print(f"  Duration: {data['metadata']['duration_seconds']:.2f}s")
-        
-        print("\n✓ All tests passed!\n")
+                    # Verify the response structure
+                    assert "matches" in data, "Response should contain matches"
+                    assert "metadata" in data, "Response should contain metadata"
+                    
+                    metadata = data["metadata"]
+                    print(f"Duration: {metadata.get('duration_seconds', 0):.2f}s", file=sys.stderr)
+                    print(f"Total matches: {metadata.get('total_matches', 0)}", file=sys.stderr)
+                    print(f"Files searched: {metadata.get('files_searched', 0)}", file=sys.stderr)
+                    print("\n✓ Search completed successfully")
+        else:
+            print(f"Error: {result.get('error', 'Unknown error')}")
         
     finally:
         proc.terminate()
         await proc.wait()
-        stderr_task.cancel()
 
 if __name__ == "__main__":
-    asyncio.run(test_date_search())
+    asyncio.run(test_search())

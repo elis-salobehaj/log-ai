@@ -6,6 +6,7 @@ Tests connection, semaphore, cache, and metrics
 import asyncio
 import sys
 import os
+import pytest
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -18,6 +19,7 @@ from redis_coordinator import (
 )
 
 
+@pytest.mark.asyncio
 async def test_connection():
     """Test basic Redis connection"""
     print("\n" + "=" * 60)
@@ -46,6 +48,7 @@ async def test_connection():
     return True
 
 
+@pytest.mark.asyncio
 async def test_semaphore():
     """Test distributed semaphore"""
     print("\n" + "=" * 60)
@@ -89,6 +92,7 @@ async def test_semaphore():
     return True
 
 
+@pytest.mark.asyncio
 async def test_cache():
     """Test distributed cache"""
     print("\n" + "=" * 60)
@@ -149,6 +153,7 @@ async def test_cache():
     return True
 
 
+@pytest.mark.asyncio
 async def test_metrics():
     """Test metrics tracking"""
     print("\n" + "=" * 60)

@@ -19,13 +19,21 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
-from config import load_config, find_log_files, AppConfig
+from config import load_config, find_log_files, AppConfig, resolve_service_names, find_similar_services
 from config_loader import get_config
 from redis_coordinator import (
     RedisCoordinator,
     RedisSemaphore,
     RedisCache,
     RedisMetrics
+)
+from sentry_integration import (
+    init_sentry,
+    capture_search_performance,
+    capture_error_context,
+    add_search_breadcrumb,
+    set_user_context,
+    get_sentry_api
 )
 
 # =============================================================================
@@ -36,22 +44,22 @@ from redis_coordinator import (
 config = get_config()
 
 # Cache settings
-CACHE_MAX_SIZE_MB = config.CACHE_MAX_SIZE_MB
-CACHE_MAX_ENTRIES = config.CACHE_MAX_ENTRIES
-CACHE_TTL_MINUTES = config.CACHE_TTL_MINUTES
+CACHE_MAX_SIZE_MB = config.cache_max_size_mb
+CACHE_MAX_ENTRIES = config.cache_max_entries
+CACHE_TTL_MINUTES = config.cache_ttl_minutes
 
 # Concurrency limits
-MAX_PARALLEL_SEARCHES_PER_CALL = config.MAX_PARALLEL_SEARCHES_PER_CALL
-MAX_GLOBAL_SEARCHES = config.MAX_GLOBAL_SEARCHES
+MAX_PARALLEL_SEARCHES_PER_CALL = config.max_parallel_searches_per_call
+MAX_GLOBAL_SEARCHES = config.max_global_searches
 
 # Search limits
-AUTO_CANCEL_TIMEOUT_SECONDS = config.AUTO_CANCEL_TIMEOUT_SECONDS
-PREVIEW_MATCHES_LIMIT = config.PREVIEW_MATCHES_LIMIT
+AUTO_CANCEL_TIMEOUT_SECONDS = config.auto_cancel_timeout_seconds
+PREVIEW_MATCHES_LIMIT = config.preview_matches_limit
 
 # File output
-FILE_OUTPUT_DIR = Path(config.FILE_OUTPUT_DIR)
-CLEANUP_INTERVAL_HOURS = config.CLEANUP_INTERVAL_HOURS
-FILE_RETENTION_HOURS = config.FILE_RETENTION_HOURS
+FILE_OUTPUT_DIR = Path(config.file_output_dir)
+CLEANUP_INTERVAL_HOURS = config.cleanup_interval_hours
+FILE_RETENTION_HOURS = config.file_retention_hours
 
 # Logging
 # Create unique session ID: random alphanumeric + timestamp
@@ -78,7 +86,7 @@ sys.stderr.write(f"[INIT] Session log directory: {LOG_DIR}\n")
 sys.stderr.flush()
 
 # Configure logging to both file and stderr
-log_level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
+log_level = getattr(logging, config.log_level.upper(), logging.INFO)
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -89,7 +97,7 @@ logging.basicConfig(
     force=True  # Override any existing configuration
 )
 logger = logging.getLogger("log-ai")
-logger.info(f"Log level set to: {config.LOG_LEVEL}")
+logger.info(f"Log level set to: {config.log_level}")
 
 # =============================================================================
 # Date parsing utilities
@@ -277,21 +285,24 @@ HAS_RIPGREP = shutil.which("rg") is not None
 redis_coordinator: Optional[RedisCoordinator] = None
 redis_connected: bool = False
 
+# Sentry error tracking (initialized on startup)
+sentry_enabled: bool = False
+
 
 async def init_redis():
     """Initialize Redis connection for distributed coordination"""
     global redis_coordinator, redis_connected
     
-    if not config.REDIS_ENABLED:
+    if not config.redis_enabled:
         sys.stderr.write("[REDIS] Redis disabled via config\n")
         return
     
-    sys.stderr.write(f"[REDIS] Connecting to {config.REDIS_HOST}:{config.REDIS_PORT}...\n")
+    sys.stderr.write(f"[REDIS] Connecting to {config.redis_host}:{config.redis_port}...\n")
     redis_coordinator = RedisCoordinator(
-        host=config.REDIS_HOST,
-        port=config.REDIS_PORT,
-        password=config.REDIS_PASSWORD,
-        db=config.REDIS_DB
+        host=config.redis_host,
+        port=config.redis_port,
+        password=config.redis_password,
+        db=config.redis_db
     )
     
     redis_connected = await redis_coordinator.connect()
@@ -309,6 +320,28 @@ async def shutdown_redis():
         sys.stderr.write("[REDIS] Connection closed\n")
 
 
+def init_sentry_on_startup():
+    """Initialize Sentry error tracking"""
+    global sentry_enabled
+    
+    sys.stderr.write("[SENTRY] Initializing error tracking...\n")
+    sentry_enabled = init_sentry()
+    
+    if sentry_enabled:
+        # Set user context from SSH connection
+        ssh_conn = os.environ.get("SSH_CONNECTION", "")
+        username = os.environ.get("USER") or os.environ.get("SYSLOG_USER")
+        
+        if ssh_conn:
+            client_ip = ssh_conn.split()[0]
+            set_user_context(username=username, ip_address=client_ip)
+            sys.stderr.write(f"[SENTRY] User context set: {username} from {client_ip}\n")
+        
+        sys.stderr.write("[SENTRY] Error tracking enabled\n")
+    else:
+        sys.stderr.write("[SENTRY] Error tracking disabled (SENTRY_DSN not configured)\n")
+
+
 def get_search_semaphore():
     """
     Get search semaphore - uses Redis if available, falls back to local asyncio.Semaphore.
@@ -318,13 +351,13 @@ def get_search_semaphore():
         return RedisSemaphore(
             redis_coordinator.redis,
             key_name="global_searches",
-            max_count=config.MAX_GLOBAL_SEARCHES,
-            retry_delay=config.REDIS_RETRY_DELAY,
-            max_retries=config.REDIS_MAX_RETRIES
+            max_count=config.max_global_searches,
+            retry_delay=config.redis_retry_delay,
+            max_retries=config.redis_max_retries
         )
     else:
         # Fallback to local semaphore
-        return asyncio.Semaphore(config.MAX_GLOBAL_SEARCHES)
+        return asyncio.Semaphore(config.max_global_searches)
 
 
 def get_search_cache():
@@ -335,8 +368,8 @@ def get_search_cache():
     if redis_connected and redis_coordinator and redis_coordinator.redis:
         return RedisCache(
             redis_coordinator.redis,
-            ttl_seconds=config.CACHE_TTL_MINUTES * 60,
-            max_size_mb=config.CACHE_MAX_SIZE_MB
+            ttl_seconds=config.cache_ttl_minutes * 60,
+            max_size_mb=config.cache_max_size_mb
         )
     else:
         # Fallback to local cache
@@ -398,7 +431,16 @@ class SearchCache:
         """Generate cache key from search parameters"""
         # Sort services for order-independence
         services_sorted = tuple(sorted(services))
-        time_str = json.dumps(time_range, sort_keys=True)
+        
+        # Convert datetime objects to ISO strings for JSON serialization
+        time_range_serializable = {}
+        for key, value in time_range.items():
+            if isinstance(value, datetime):
+                time_range_serializable[key] = value.isoformat()
+            else:
+                time_range_serializable[key] = value
+        
+        time_str = json.dumps(time_range_serializable, sort_keys=True)
         key_str = f"{services_sorted}:{query}:{time_str}"
         return hashlib.md5(key_str.encode()).hexdigest()
     
@@ -633,6 +675,9 @@ async def stream_ripgrep_search(
     matches = []
     
     try:
+        # Track files searched
+        progress.files_searched = len(files)
+        
         # Build ripgrep command: pattern must come before files
         cmd = ["rg", "-i", "-n", "-j", "8", query] + files
         
@@ -696,6 +741,9 @@ async def stream_grep_search(
     matches = []
     
     try:
+        # Track files searched
+        progress.files_searched = len(files)
+        
         # Use xargs + grep
         file_list = "\0".join(files) + "\0"
         
@@ -768,21 +816,12 @@ async def search_single_service(
             sys.stderr.write(f"[SEARCH] Service not found: {service_name}\n")
             return []
         
-        # Find log files
-        if "specific_date" in time_range:
-            files = find_log_files(
-                target_service, 
-                specific_date=time_range["specific_date"],
-                start_hour=time_range.get("start_hour"),
-                end_hour=time_range.get("end_hour")
-            )
-        elif "minutes_back" in time_range:
-            files = find_log_files(target_service, minutes_back=time_range["minutes_back"])
-        elif "hours_back" in time_range:
-            files = find_log_files(target_service, hours_back=time_range["hours_back"])
-        else:
-            # Default: search today
-            files = find_log_files(target_service, specific_date=datetime.now().strftime("%Y-%m-%d"))
+        # Find log files using datetime range
+        files = find_log_files(
+            target_service,
+            start_hour=time_range["start_datetime"],
+            end_hour=time_range["end_datetime"]
+        )
         
         if not files:
             sys.stderr.write(f"[SEARCH] No files found for {service_name}\n")
@@ -864,6 +903,9 @@ def format_matches_json(matches: List[Dict], metadata: Dict) -> str:
 # =============================================================================
 
 async def main():
+    # Initialize Sentry first (synchronous)
+    init_sentry_on_startup()
+    
     # Initialize Redis (if enabled)
     await init_redis()
     
@@ -896,7 +938,15 @@ async def main():
         return [
             types.Tool(
                 name="search_logs",
-                description="Search for log entries across one or more services. Returns structured results with metadata.",
+                description="""Search for log entries across one or more services. Returns structured results with metadata.
+
+Service name supports flexible matching:
+- Exact match: "hub-ca-auth" → hub-ca-auth only
+- Base name: "auth" → all auth services (hub-ca-auth, hub-us-auth, hub-na-auth)
+- Partial match: "edr-proxy" → hub-ca-edr-proxy-service, hub-us-edr-proxy-service
+- Variations: "edr_proxy", "edrproxy" → same as "edr-proxy"
+
+Use the 'locale' parameter to filter by region (ca, us, or na).""",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -905,31 +955,24 @@ async def main():
                                 {"type": "string"},
                                 {"type": "array", "items": {"type": "string"}}
                             ],
-                            "description": "Service name(s) to search. Can be a single string or array for multi-service search."
+                            "description": "Service name (flexible matching - can be exact name, base name like 'auth', or partial match like 'edr-proxy')"
+                        },
+                        "locale": {
+                            "type": "string",
+                            "description": "Optional locale filter: 'ca' (Canada), 'us' (United States), or 'na' (North America)",
+                            "enum": ["ca", "us", "na"]
                         },
                         "query": {
                             "type": "string",
                             "description": "Keyword or pattern to search for"
                         },
-                        "hours_back": {
-                            "type": "integer",
-                            "description": "Number of hours to search back from now"
-                        },
-                        "minutes_back": {
-                            "type": "integer",
-                            "description": "Number of minutes to search back from now (for surgical precision in large log files)"
-                        },
-                        "date": {
+                        "start_time_utc": {
                             "type": "string",
-                            "description": "Specific date to search. Supports: day names (Sunday, Monday), specific dates (Dec 14, 2025-12-14), or relative (today, yesterday)"
+                            "description": "Start time in UTC (ISO 8601 format: '2026-01-05T23:00:00Z')"
                         },
-                        "time_range": {
+                        "end_time_utc": {
                             "type": "string",
-                            "description": "Time range within the date. Examples: '2 to 4pm', '14:00 to 16:00', '2pm-4pm'. User timezone is converted to UTC automatically."
-                        },
-                        "timezone": {
-                            "type": "string",
-                            "description": "User's timezone (e.g., 'America/Denver', 'EST'). Defaults to UTC if not specified."
+                            "description": "End time in UTC (ISO 8601 format: '2026-01-06T05:00:00Z')"
                         },
                         "format": {
                             "type": "string",
@@ -938,7 +981,7 @@ async def main():
                             "default": "text"
                         }
                     },
-                    "required": ["service_name", "query"]
+                    "required": ["service_name", "query", "start_time_utc", "end_time_utc"]
                 }
             ),
             types.Tool(
@@ -960,6 +1003,100 @@ async def main():
                     },
                     "required": ["file_path"]
                 }
+            ),
+            types.Tool(
+                name="query_sentry_issues",
+                description="""Query Sentry issues for one or more services. Returns recent errors and their details.
+
+Service name supports flexible matching:
+- "auth" → queries all auth services across locales
+- "edr-proxy" → queries edr-proxy-service for all locales
+- "hub-ca-auth" → queries only Canada auth service
+
+Use 'locale' parameter to filter to specific region.""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service_name": {
+                            "type": "string",
+                            "description": "Service name (supports fuzzy matching and variations like 'auth', 'edr-proxy', 'edr_proxy')"
+                        },
+                        "locale": {
+                            "type": "string",
+                            "description": "Optional: Filter to specific locale (ca/us/na)",
+                            "enum": ["ca", "us", "na"]
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Sentry query string (default: 'is:unresolved'). Examples: 'is:unresolved issue.priority:[high, medium]', 'is:unresolved assigned:me'",
+                            "default": "is:unresolved"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max number of issues to return (default: 25)",
+                            "default": 25
+                        },
+                        "statsPeriod": {
+                            "type": "string",
+                            "description": "Time period for stats: 1h, 24h, 7d, 14d, 30d (default: 24h)",
+                            "default": "24h"
+                        }
+                    },
+                    "required": ["service_name"]
+                }
+            ),
+            types.Tool(
+                name="get_sentry_issue_details",
+                description="Get detailed information about a specific Sentry issue including stack traces, breadcrumbs, and context.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "issue_id": {
+                            "type": "string",
+                            "description": "Sentry issue ID (e.g., '18')"
+                        }
+                    },
+                    "required": ["issue_id"]
+                }
+            ),
+            types.Tool(
+                name="search_sentry_traces",
+                description="""Search performance traces in Sentry for one or more services. Useful for finding slow transactions.
+
+Service name supports flexible matching:
+- "auth" → all auth services
+- "edr-proxy" → all edr-proxy services
+- Use 'locale' to filter by region.""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service_name": {
+                            "type": "string",
+                            "description": "Service name (supports fuzzy matching)"
+                        },
+                        "locale": {
+                            "type": "string",
+                            "description": "Optional: Filter to specific locale (ca/us/na)",
+                            "enum": ["ca", "us", "na"]
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Search query (e.g., 'transaction.duration:>5s' for slow traces)",
+                            "default": ""
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max traces to return (default: 10)",
+                            "default": 10
+                        },
+                        "statsPeriod": {
+                            "type": "string",
+                            "description": "Time period: 1h, 24h, 7d (default: 24h)",
+                            "default": "24h"
+                        }
+                    },
+                    "required": ["service_name"]
+                }
             )
         ]
 
@@ -972,6 +1109,12 @@ async def main():
             return await search_logs_handler(arguments, config)
         elif name == "read_search_file":
             return await read_search_file_handler(arguments)
+        elif name == "query_sentry_issues":
+            return await query_sentry_issues_handler(arguments, config)
+        elif name == "get_sentry_issue_details":
+            return await get_sentry_issue_details_handler(arguments)
+        elif name == "search_sentry_traces":
+            return await search_sentry_traces_handler(arguments, config)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -981,71 +1124,60 @@ async def main():
         
         # Parse arguments
         service_name_arg = args.get("service_name")
-        services = service_name_arg if isinstance(service_name_arg, list) else [service_name_arg]
+        locale = args.get("locale")
         query = args.get("query")
         format_type = args.get("format", "text")
         user_tz = args.get("timezone", "UTC")
         
-        # Handle date and time range parsing
-        time_range = {}
-        date_str = args.get("date")
-        time_range_str = args.get("time_range")
+        # Resolve service names with flexible matching
+        service_queries = service_name_arg if isinstance(service_name_arg, list) else [service_name_arg]
+        services = []
+        for svc_query in service_queries:
+            matched = resolve_service_names(svc_query, config.services, locale=locale)
+            if not matched:
+                suggestions = find_similar_services(svc_query, config.services)
+                error_msg = f"Error: Service not found: {svc_query}"
+                if suggestions:
+                    error_msg += f"\n\nDid you mean one of these?\n  - " + "\n  - ".join(suggestions)
+                return [types.TextContent(type="text", text=error_msg)]
+            services.extend([s.name for s in matched])
         
-        if date_str:
-            # Parse natural language date
-            date_range = parse_date_string(date_str)
-            if date_range:
-                start_date, end_date = date_range
-                logger.info(f"Parsed date '{date_str}' as {start_date.date()}")
-                time_range["specific_date"] = start_date.strftime("%Y-%m-%d")
-                
-                # Parse time range if provided (e.g., "2 to 4pm")
-                if time_range_str:
-                    hours = parse_time_range(time_range_str)
-                    if hours:
-                        start_hour, end_hour = hours
-                        logger.info(f"Parsed time range '{time_range_str}' as {start_hour}:00 to {end_hour}:00 in {user_tz}")
-                        
-                        # Convert user timezone to UTC (logs are in UTC)
-                        try:
-                            import zoneinfo
-                            tz = zoneinfo.ZoneInfo(user_tz)
-                            
-                            # Create datetime with user's timezone
-                            user_start = start_date.replace(hour=start_hour, tzinfo=tz)
-                            user_end = start_date.replace(hour=end_hour, tzinfo=tz)
-                            
-                            # Convert to UTC
-                            utc_start = user_start.astimezone(zoneinfo.ZoneInfo("UTC"))
-                            utc_end = user_end.astimezone(zoneinfo.ZoneInfo("UTC"))
-                            
-                            # If timezone conversion crosses date boundary, adjust
-                            if utc_start.date() != start_date.date():
-                                time_range["specific_date"] = utc_start.strftime("%Y-%m-%d")
-                                logger.info(f"Timezone conversion: {user_tz} {start_hour}:00 → UTC {utc_start.hour}:00 on {utc_start.date()}")
-                            
-                            time_range["start_hour"] = utc_start.hour
-                            time_range["end_hour"] = utc_end.hour
-                            
-                        except Exception as e:
-                            logger.warning(f"Could not convert timezone {user_tz}: {e}, assuming UTC")
-                            time_range["start_hour"] = start_hour
-                            time_range["end_hour"] = end_hour
-                    else:
-                        logger.warning(f"Could not parse time range: {time_range_str}")
-            else:
-                logger.warning(f"Could not parse date: {date_str}, using today")
-                time_range["specific_date"] = datetime.now().strftime("%Y-%m-%d")
-        elif args.get("minutes_back"):
-            time_range["minutes_back"] = int(args["minutes_back"])
-        elif args.get("hours_back"):
-            time_range["hours_back"] = int(args["hours_back"])
-        else:
-            # Default to today
-            time_range["specific_date"] = datetime.now().strftime("%Y-%m-%d")
+        # Remove duplicates while preserving order
+        services = list(dict.fromkeys(services))
+        
+        # Parse UTC timestamps (required)
+        start_time_utc = args.get("start_time_utc")
+        end_time_utc = args.get("end_time_utc")
+        
+        if not start_time_utc or not end_time_utc:
+            return [types.TextContent(type="text", text="Error: Both start_time_utc and end_time_utc are required parameters.")]
+        
+        try:
+            from dateutil import parser as date_parser
+            start_dt = date_parser.isoparse(start_time_utc)
+            end_dt = date_parser.isoparse(end_time_utc)
+            
+            time_range = {
+                "start_datetime": start_dt,
+                "end_datetime": end_dt
+            }
+            logger.info(f"UTC time range: {start_dt} to {end_dt}")
+            
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error: Invalid UTC timestamp format. Expected ISO 8601 (e.g., '2026-01-05T23:00:00Z'). Error: {e}")]
         
         logger.info(f"search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}")
         sys.stderr.write(f"[REQUEST] search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}\n")
+        
+        # Add Sentry breadcrumb for search start
+        if sentry_enabled:
+            for svc in services:
+                add_search_breadcrumb(
+                    service_name=svc,
+                    action="search_started",
+                    query=query[:50],  # Truncate long queries
+                    time_range=str(time_range)
+                )
         
         # Get cache instance (Redis or local)
         cache = get_search_cache()
@@ -1056,6 +1188,20 @@ async def main():
             matches, metadata = cached
             metadata["cached"] = True
             metadata["duration_seconds"] = time.time() - start_time
+            
+            # Track cache hit in Sentry
+            if sentry_enabled:
+                for svc in services:
+                    service_config = next((s for s in config.services if s.name == svc), None)
+                    if service_config:
+                        capture_search_performance(
+                            service_config=service_config,
+                            pattern=query,
+                            duration_ms=metadata["duration_seconds"] * 1000,
+                            matched_files=metadata.get("files_searched", 0),
+                            result_count=len(matches),
+                            cache_hit=True
+                        )
             
             if format_type == "json":
                 return [types.TextContent(type="text", text=format_matches_json(matches, metadata))]
@@ -1144,6 +1290,20 @@ async def main():
                 if not error_occurred and not metadata.get("overflow"):
                     cache.put(services, query, time_range, all_matches, metadata)
                 
+                # Track performance in Sentry
+                if sentry_enabled:
+                    for svc in services:
+                        service_config = next((s for s in config.services if s.name == svc), None)
+                        if service_config:
+                            capture_search_performance(
+                                service_config=service_config,
+                                pattern=query,
+                                duration_ms=duration * 1000,
+                                matched_files=metadata["files_searched"],
+                                result_count=len(all_matches),
+                                cache_hit=False
+                            )
+                
                 sys.stderr.write(f"[COMPLETE] {len(all_matches)} matches in {duration:.2f}s\n")
                 
                 # Format response
@@ -1153,6 +1313,18 @@ async def main():
                     return [types.TextContent(type="text", text=format_matches_text(preview_matches, metadata))]
                 
             except Exception as e:
+                # Capture error in Sentry with context
+                if sentry_enabled:
+                    for svc in services:
+                        service_config = next((s for s in config.services if s.name == svc), None)
+                        if service_config:
+                            capture_error_context(
+                                error=e,
+                                service_config=service_config,
+                                search_params=args,
+                                user_ip=os.environ.get("SSH_CONNECTION", "").split()[0] if os.environ.get("SSH_CONNECTION") else None
+                            )
+                
                 sys.stderr.write(f"[ERROR] Unexpected error: {e}\n")
                 import traceback
                 traceback.print_exc()
@@ -1163,16 +1335,26 @@ async def main():
         file_path_str = args.get("file_path")
         format_type = args.get("format", "text")
         
+        if not file_path_str:
+            return [types.TextContent(type="text", text="Error: file_path parameter is required")]
+        
         # Security: validate path
-        file_path = Path(file_path_str)
-        if not str(file_path).startswith(str(FILE_OUTPUT_DIR)):
-            return [types.TextContent(type="text", text=f"Error: Invalid file path. Must be in {FILE_OUTPUT_DIR}")]
-        
-        if not file_path.name.startswith("logai-"):
-            return [types.TextContent(type="text", text="Error: Invalid file name. Must start with 'logai-'")]
-        
-        if not file_path.exists():
-            return [types.TextContent(type="text", text=f"Error: File not found: {file_path}")]
+        try:
+            file_path = Path(file_path_str).resolve()
+            base_dir = FILE_OUTPUT_DIR.resolve()
+            
+            # Check if file is within FILE_OUTPUT_DIR (including subdirectories)
+            if not str(file_path).startswith(str(base_dir)):
+                return [types.TextContent(type="text", text=f"Error: Invalid file path. Must be in {base_dir}")]
+            
+            if not file_path.name.startswith("logai-"):
+                return [types.TextContent(type="text", text="Error: Invalid file name. Must start with 'logai-'")]
+            
+            if not file_path.exists():
+                return [types.TextContent(type="text", text=f"Error: File not found: {file_path}")]
+            
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error: Invalid file path: {e}")]
         
         try:
             # Read JSON file
@@ -1180,6 +1362,10 @@ async def main():
                 matches = json.load(f)
             
             file_size_mb = file_path.stat().st_size / 1024 / 1024
+            
+            # Handle large files - don't try to return all matches
+            if file_size_mb > 10:
+                return [types.TextContent(type="text", text=f"Error: File too large ({file_size_mb:.2f} MB). Files over 10MB cannot be read via this tool. Use command line tools instead.")]
             
             metadata = {
                 "file": str(file_path),
@@ -1192,7 +1378,12 @@ async def main():
                     "matches": matches,
                     "metadata": metadata
                 }
-                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+                # Safely serialize - handle any encoding issues
+                try:
+                    json_str = json.dumps(result, indent=2, ensure_ascii=False)
+                    return [types.TextContent(type="text", text=json_str)]
+                except (TypeError, ValueError) as e:
+                    return [types.TextContent(type="text", text=f"Error serializing JSON: {e}. Try format='text' instead.")]
             else:
                 # Convert to text
                 lines = []
@@ -1213,6 +1404,303 @@ async def main():
                 
         except Exception as e:
             return [types.TextContent(type="text", text=f"Error reading file: {e}")]
+
+    async def query_sentry_issues_handler(args: dict, config: AppConfig) -> list[types.TextContent]:
+        """Handle query_sentry_issues tool with multi-service support"""
+        service_name = args.get("service_name")
+        locale = args.get("locale")
+        query = args.get("query", "is:unresolved")
+        limit = args.get("limit", 25)
+        time_period = args.get("statsPeriod", "24h")
+        
+        logger.debug(f"[SENTRY] query_sentry_issues called: service_name={service_name}, locale={locale}")
+        
+        # Resolve service name(s) with flexible matching
+        matched_services = resolve_service_names(service_name, config.services, locale=locale)
+        
+        logger.debug(f"[SENTRY] Matched {len(matched_services)} services: {[s.name for s in matched_services]}")
+        
+        if not matched_services:
+            suggestions = find_similar_services(service_name, config.services)
+            error_msg = f"Error: Service not found: {service_name}"
+            if suggestions:
+                error_msg += f"\n\nDid you mean one of these?\n  - " + "\n  - ".join(suggestions)
+            return [types.TextContent(type="text", text=error_msg)]
+        
+        # Aggregate results from all matched services
+        all_issues = []
+        services_queried = []
+        projects_without_sentry = []
+        
+        # Query Sentry API for each matched service
+        sentry_api = get_sentry_api()
+        if not sentry_api.is_available():
+            return [types.TextContent(type="text", text="Error: Sentry API not configured. Set SENTRY_AUTH_TOKEN environment variable.")]
+        
+        for service in matched_services:
+            logger.debug(f"[SENTRY] Checking service {service.name}: sentry_service_name={service.sentry_service_name}")
+            
+            if not service.sentry_service_name:
+                logger.debug(f"[SENTRY] Service {service.name} has no sentry_service_name - skipping")
+                projects_without_sentry.append(service.name)
+                continue  # Skip services without Sentry configuration
+            
+            # Get Sentry project ID from DSN
+            sentry_project_id = service.get_sentry_project_id()
+            if not sentry_project_id:
+                logger.debug(f"[SENTRY] Service {service.name} has no project ID in DSN - skipping")
+                projects_without_sentry.append(service.name)
+                continue
+            
+            sentry_project = service.sentry_service_name
+            logger.debug(f"[SENTRY] Querying Sentry project '{sentry_project}' (ID: {sentry_project_id}) for service {service.name}")
+            
+            # Query Sentry API using project ID
+            result = sentry_api.query_issues(
+                project=sentry_project_id,  # Use project ID, not slug
+                query=query,
+                limit=limit,
+                statsPeriod=time_period
+            )
+            
+            if result.get("success"):
+                # Tag each issue with originating service
+                for issue in result.get("issues", []):
+                    issue["_source_service"] = service.name
+                    issue["_sentry_project"] = sentry_project
+                
+                all_issues.extend(result.get("issues", []))
+                services_queried.append(f"{service.name} → {sentry_project}")
+        
+        if not services_queried:
+            error_msg = f"No Sentry configuration found for: {', '.join(s.name for s in matched_services)}"
+            if projects_without_sentry:
+                error_msg += f"\n\nServices without Sentry: {', '.join(projects_without_sentry)}"
+            return [types.TextContent(type="text", text=error_msg)]
+        
+        # Format aggregated results
+        lines = []
+        lines.append("=== Sentry Issues Query Results ===")
+        lines.append(f"Services: {', '.join(services_queried)}")
+        lines.append(f"Query: {query}")
+        lines.append(f"Time period: {time_period}")
+        lines.append(f"Total issues: {len(all_issues)}")
+        lines.append("")
+        
+        if not all_issues:
+            lines.append("No issues found matching the query.")
+        else:
+            # Sort by event count (descending) and limit
+            all_issues.sort(key=lambda x: x.get("count", 0), reverse=True)
+            display_issues = all_issues[:limit]
+            
+            for issue in display_issues:
+                source_service = issue.get("_source_service", "unknown")
+                sentry_project = issue.get("_sentry_project", "unknown")
+                issue_id = issue.get("id", "")
+                title = issue.get("title", "No title")
+                count = issue.get("count", 0)
+                user_count = issue.get("userCount", 0)
+                first_seen = issue.get("firstSeen", "")
+                last_seen = issue.get("lastSeen", "")
+                status = issue.get("status", "unknown")
+                level = issue.get("level", "unknown")
+                
+                lines.append(f"Issue #{issue_id} [{source_service}] - {status.upper()}")
+                lines.append(f"  Project: {sentry_project}")
+                lines.append(f"  Title: {title}")
+                lines.append(f"  Level: {level}")
+                lines.append(f"  Count: {count} events")
+                lines.append(f"  Affected users: {user_count}")
+                lines.append(f"  First seen: {first_seen}")
+                lines.append(f"  Last seen: {last_seen}")
+                
+                # Add culprit if available
+                culprit = issue.get("culprit")
+                if culprit:
+                    lines.append(f"  Location: {culprit}")
+                
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def get_sentry_issue_details_handler(args: dict) -> list[types.TextContent]:
+        """Handle get_sentry_issue_details tool"""
+        issue_id = args.get("issue_id")
+        
+        if not issue_id:
+            return [types.TextContent(type="text", text="Error: issue_id is required")]
+        
+        # Query Sentry API
+        sentry_api = get_sentry_api()
+        if not sentry_api.is_available():
+            return [types.TextContent(type="text", text="Error: Sentry API not configured. Set SENTRY_AUTH_TOKEN environment variable.")]
+        
+        result = sentry_api.get_issue_details(issue_id)
+        
+        if not result.get("success"):
+            return [types.TextContent(type="text", text=f"Error: {result.get('error', 'Unknown error')}")]
+        
+        # Format results
+        issue = result.get("issue", {})
+        lines = []
+        lines.append(f"=== Sentry Issue #{issue_id} ===")
+        lines.append("")
+        
+        # Basic info
+        lines.append(f"Title: {issue.get('title', 'No title')}")
+        lines.append(f"Status: {issue.get('status', 'unknown').upper()}")
+        lines.append(f"Level: {issue.get('level', 'unknown')}")
+        lines.append(f"Type: {issue.get('type', 'unknown')}")
+        lines.append("")
+        
+        # Statistics
+        lines.append("Statistics:")
+        lines.append(f"  Total events: {issue.get('count', 0)}")
+        lines.append(f"  Affected users: {issue.get('userCount', 0)}")
+        lines.append(f"  First seen: {issue.get('firstSeen', 'unknown')}")
+        lines.append(f"  Last seen: {issue.get('lastSeen', 'unknown')}")
+        lines.append("")
+        
+        # Location
+        culprit = issue.get("culprit")
+        if culprit:
+            lines.append(f"Location: {culprit}")
+        
+        # Metadata
+        metadata = issue.get("metadata", {})
+        if metadata:
+            lines.append("")
+            lines.append("Error Details:")
+            error_type = metadata.get("type", '')
+            error_value = metadata.get("value", '')
+            if error_type:
+                lines.append(f"  Type: {error_type}")
+            if error_value:
+                lines.append(f"  Message: {error_value}")
+        
+        # Tags
+        tags = issue.get("tags", [])
+        if tags:
+            lines.append("")
+            lines.append("Tags:")
+            for tag in tags[:10]:  # Limit to first 10 tags
+                key = tag.get("key", "")
+                value = tag.get("value", "")
+                if key and value:
+                    lines.append(f"  {key}: {value}")
+        
+        # Permalink
+        permalink = issue.get("permalink")
+        if permalink:
+            lines.append("")
+            lines.append(f"View in Sentry: {permalink}")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def search_sentry_traces_handler(args: dict, config: AppConfig) -> list[types.TextContent]:
+        """Handle search_sentry_traces tool with multi-service support"""
+        service_name = args.get("service_name")
+        locale = args.get("locale")
+        query = args.get("query", "")
+        limit = args.get("limit", 10)
+        time_period = args.get("statsPeriod", "24h")
+        
+        logger.debug(f"[SENTRY] search_sentry_traces called: service_name={service_name}, locale={locale}")
+        
+        # Resolve service name(s) with flexible matching
+        matched_services = resolve_service_names(service_name, config.services, locale=locale)
+        
+        logger.debug(f"[SENTRY] Matched {len(matched_services)} services: {[s.name for s in matched_services]}")
+        
+        if not matched_services:
+            suggestions = find_similar_services(service_name, config.services)
+            error_msg = f"Error: Service not found: {service_name}"
+            if suggestions:
+                error_msg += f"\n\nDid you mean one of these?\n  - " + "\n  - ".join(suggestions)
+            return [types.TextContent(type="text", text=error_msg)]
+        
+        # Aggregate traces from all matched services
+        all_traces = []
+        services_queried = []
+        projects_without_sentry = []
+        
+        # Query Sentry API for each matched service
+        sentry_api = get_sentry_api()
+        if not sentry_api.is_available():
+            return [types.TextContent(type="text", text="Error: Sentry API not configured. Set SENTRY_AUTH_TOKEN environment variable.")]
+        
+        for service in matched_services:
+            logger.debug(f"[SENTRY] Checking service {service.name}: sentry_service_name={service.sentry_service_name}")
+            
+            if not service.sentry_service_name:
+                logger.debug(f"[SENTRY] Service {service.name} has no sentry_service_name - skipping")
+                projects_without_sentry.append(service.name)
+                continue  # Skip services without Sentry configuration
+            
+            # Get Sentry project ID from DSN
+            sentry_project_id = service.get_sentry_project_id()
+            if not sentry_project_id:
+                logger.debug(f"[SENTRY] Service {service.name} has no project ID in DSN - skipping")
+                projects_without_sentry.append(service.name)
+                continue
+            
+            sentry_project = service.sentry_service_name
+            logger.debug(f"[SENTRY] Querying Sentry project '{sentry_project}' (ID: {sentry_project_id}) for service {service.name}")
+            
+            # Query Sentry API using project ID
+            result = sentry_api.search_traces(
+                project=sentry_project_id,  # Use project ID, not slug
+                query=query,
+                limit=limit,
+                statsPeriod=time_period
+            )
+            
+            if result.get("success"):
+                # Tag each trace with originating service
+                for trace in result.get("traces", []):
+                    trace["_source_service"] = service.name
+                    trace["_sentry_project"] = sentry_project
+                
+                all_traces.extend(result.get("traces", []))
+                services_queried.append(f"{service.name} → {sentry_project}")
+        
+        if not services_queried:
+            error_msg = f"No Sentry configuration found for: {', '.join(s.name for s in matched_services)}"
+            if projects_without_sentry:
+                error_msg += f"\n\nServices without Sentry: {', '.join(projects_without_sentry)}"
+            return [types.TextContent(type="text", text=error_msg)]
+        
+        # Format aggregated results
+        lines = []
+        lines.append("=== Sentry Performance Traces Query Results ===")
+        lines.append(f"Services: {', '.join(services_queried)}")
+        lines.append(f"Query: {query if query else '(all traces)'}")
+        lines.append(f"Time period: {time_period}")
+        lines.append(f"Total traces: {len(all_traces)}")
+        lines.append("")
+        
+        if not all_traces:
+            lines.append("No traces found matching the query.")
+        else:
+            # Sort by duration (descending) and limit
+            all_traces.sort(key=lambda x: x.get("transaction.duration", 0), reverse=True)
+            display_traces = all_traces[:limit]
+            
+            for trace in display_traces:
+                source_service = trace.get("_source_service", "unknown")
+                sentry_project = trace.get("_sentry_project", "unknown")
+                transaction = trace.get("transaction", "unknown")
+                duration = trace.get("transaction.duration", 0)
+                timestamp = trace.get("timestamp", "")
+                
+                lines.append(f"Transaction: {transaction} [{source_service}]")
+                lines.append(f"  Project: {sentry_project}")
+                lines.append(f"  Duration: {duration:.2f}ms")
+                lines.append(f"  Timestamp: {timestamp}")
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
 
     async with stdio_server() as (read_stream, write_stream):
         await server.run(

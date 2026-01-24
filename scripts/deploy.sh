@@ -65,11 +65,15 @@ echo ""
 echo "Syncing project files to remote server..."
 rsync -avz --delete \
     --exclude='.git' \
+    --exclude='.idea' \
+    --exclude='.vscode' \
+    --exclude='..env.example' \
     --exclude='.venv' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='.DS_Store' \
     --exclude='uv.lock' \
+    --exclude='scripts/tools' \
     "$LOCAL_DIR/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 
 echo ""

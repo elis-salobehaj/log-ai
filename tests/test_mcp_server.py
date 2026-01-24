@@ -7,6 +7,7 @@ Tests core functionality without requiring actual log files.
 import asyncio
 import sys
 from pathlib import Path
+import pytest
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from config import load_config
 
 
+@pytest.mark.asyncio
 async def test_config_loading():
     """Test configuration loading"""
     print("=" * 60)
@@ -33,18 +35,15 @@ async def test_config_loading():
     print("\n✓ Configuration loaded successfully\n")
 
 
+@pytest.mark.asyncio
 async def test_cache_functionality():
     """Test SearchCache class"""
     print("=" * 60)
     print("Test 2: Cache Functionality")
     print("=" * 60)
     
-    # Import after adding to path
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("server", Path(__file__).parent.parent / "src" / "server.py")
-    server_module = importlib.util.module_from_spec(spec)
-    
-    SearchCache = server_module.SearchCache
+    # Import server module
+    from server import SearchCache
     cache = SearchCache()
     
     # Test put and get
@@ -76,19 +75,14 @@ async def test_cache_functionality():
     print("\n✓ Cache functionality working\n")
 
 
+@pytest.mark.asyncio
 async def test_file_helpers():
     """Test file output helpers"""
     print("=" * 60)
     print("Test 3: File Output Helpers")
     print("=" * 60)
     
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("server", Path(__file__).parent.parent / "src" / "server.py")
-    server_module = importlib.util.module_from_spec(spec)
-    
-    ensure_output_dir = server_module.ensure_output_dir
-    generate_output_filename = server_module.generate_output_filename
-    FILE_OUTPUT_DIR = server_module.FILE_OUTPUT_DIR
+    from server import ensure_output_dir, generate_output_filename, FILE_OUTPUT_DIR
     
     # Test directory creation
     ensure_output_dir()
@@ -108,6 +102,7 @@ async def test_file_helpers():
     print("\n✓ File helpers working\n")
 
 
+@pytest.mark.asyncio
 async def test_format_helpers():
     """Test formatting functions"""
     print("=" * 60)
@@ -118,8 +113,7 @@ async def test_format_helpers():
     spec = importlib.util.spec_from_file_location("server", Path(__file__).parent.parent / "src" / "server.py")
     server_module = importlib.util.module_from_spec(spec)
     
-    format_matches_text = server_module.format_matches_text
-    format_matches_json = server_module.format_matches_json
+    from server import format_matches_text, format_matches_json
     
     # Test matches formatting
     matches = [

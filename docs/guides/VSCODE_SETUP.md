@@ -103,7 +103,7 @@ The MCP server connects via SSH, so you need passwordless SSH authentication:
 
 1. **Generate SSH key** (if you don't have one):
    ```bash
-   ssh-keygen -t ed25519 -C "your_email@pason.com"
+   ssh-keygen -t ed25519 -C "your_email@example.com"
    ```
 
 2. **Copy to syslog server**:

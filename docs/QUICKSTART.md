@@ -76,8 +76,8 @@ See [VSCODE_SETUP.md](VSCODE_SETUP.md) for detailed instructions.
       "log-ai": {
         "command": "ssh",
         "args": [
-          "view-user@syslog.example.com",
-          "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
+          "user@syslog.example.com",
+          "~/.local/bin/uv run --directory /home/user/log-ai src/server.py"
         ]
       }
     }
@@ -112,8 +112,8 @@ See [VSCODE_SETUP.md](VSCODE_SETUP.md) for detailed instructions.
     "log-ai": {
       "command": "ssh",
       "args": [
-        "view-user@syslog.example.com",
-        "~/.local/bin/uv run --directory /home/view-user/log-ai src/server.py"
+        "user@syslog.example.com",
+        "~/.local/bin/uv run --directory /home/user/log-ai src/server.py"
       ]
     }
   }

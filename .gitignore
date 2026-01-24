@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Distribution / Packaging
 dist/
@@ -35,6 +36,11 @@ var_log/
 .env
 config/.env
 config/services.yaml
+services.yaml
+
+# Sentry DSN mapping (contains real keys)
+sentry_dsn_mapping.json
+scripts/tools/sentry_dsn_mapping.json
 
 # Temporary
 .last_session

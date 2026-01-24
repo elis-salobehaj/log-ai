@@ -1,0 +1,12 @@
+# Archived Reports
+
+This directory contains historical reports organized by year.
+
+Example structure:
+```
+archive/
+├── 2025/
+│   └── FEATURE_IMPLEMENTATION_REPORT.md
+└── 2026/
+    └── REFACTOR_SUMMARY.md
+```

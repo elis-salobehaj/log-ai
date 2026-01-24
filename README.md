@@ -105,33 +105,36 @@ graph LR
 
 ## MCP Tools
 
-LogAI exposes 2 MCP tools that AI agents can call:
+LogAI exposes 5 MCP tools that AI agents can call:
 
 ### 1. search_logs
 
-Search for log entries across one or more services.
+Search for log entries across one or more services with precise UTC time ranges.
 
 **Parameters:**
-- `service_name` (string | string[]): Service name(s) to search
+- `service_name` (string | string[]): Service name(s) to search. Supports flexible matching:
+  - Exact match: `"hub-ca-auth"` → hub-ca-auth only
+  - Base name: `"auth"` → all auth services (hub-ca-auth, hub-us-auth, hub-na-auth)
+  - Partial match: `"edr-proxy"` → hub-ca-edr-proxy-service, hub-us-edr-proxy-service
+  - Variations: `"edr_proxy"` → same as `"edr-proxy"`
 - `query` (string): Keyword or pattern to search for
-- `date` (string, optional): Natural language date - "today", "yesterday", "wednesday", "Dec 14", "2025-12-14"
-- `time_range` (string, optional): Time range within date - "2 to 4pm", "14:00 to 16:00", "2pm-4pm"
-- `timezone` (string, optional): User timezone for time conversion - "America/Denver", "EST" (default: "UTC")
-- `hours_back` (integer, optional): Hours to search back from now (alternative to date)
-- `minutes_back` (integer, optional): Minutes to search back from now (for surgical precision in large log files)
+- `start_time_utc` (string, **required**): Start time in ISO 8601 format (UTC) - e.g., `"2026-01-07T15:20:00Z"`
+- `end_time_utc` (string, **required**): End time in ISO 8601 format (UTC) - e.g., `"2026-01-07T15:30:00Z"`
+- `locale` (string, optional): Filter by region - "ca" (Canada), "us" (United States), or "na" (North America)
 - `format` (string, optional): Output format - "text" or "json" (default: "text")
 
-**Example (Natural Language Date/Time):**
+**Example (UTC Timestamps):**
 ```json
 {
   "service_name": "dev-ca-api",
   "query": "timeout",
-  "date": "wednesday",
-  "time_range": "2 to 4pm",
-  "timezone": "America/Denver",
+  "start_time_utc": "2026-01-07T15:20:00Z",
+  "end_time_utc": "2026-01-07T16:30:00Z",
   "format": "text"
 }
 ```
+
+> **Note**: The agent is responsible for converting user timezone to UTC. For example, if a user asks "search between 2-4pm MST", the agent converts this to the equivalent UTC time range before calling the tool.
 
 **Response:**
 ```
@@ -167,20 +170,20 @@ Use read_search_file tool to retrieve full results
 {
   "matches": [
     {
-      "file": "/syslog/application_logs/2025/12/29/15/aws-ecs-auth-kinesis-7-2025-12-29-15-30-32-f9765eed.log",
+      "file": "/syslog/application_logs/2025/12/29/15/example-auth-kinesis-7-2025-12-29-15-30-32-f9765eed.log",
       "line": 2034,
       "content": {
         "timestamp": "2025-12-29T15:32:00.653519180+0000",
         "hostname": "ip-10-160-44-43.us-west-2.compute.internal",
         "level": "WARN",
         "message": "Encountered status MISSING_PRIVILEGE. Missing Privileges: [super_sercret_access].",
-        "Path": "http://aws-ecs-auth.example.com/v1/validateSession",
+        "Path": "http://example-auth.example.com/v1/validateSession",
         "dd.trace_id": "69529ef00000000012db3f8badb09b21",
         "dd.service": "example-auth-service",
-        "container_name": "aws-ecs-auth",
-        "ecs_cluster": "datahub_fargate_01"
+        "container_name": "example-auth",
+        "ecs_cluster": "production_cluster_01"
       },
-      "service": "aws-ecs-auth"
+      "service": "example-auth"
     }
   ],
   "metadata": {
@@ -213,7 +216,64 @@ Read a previously saved search result file.
 }
 ```
 
----
+### 3. query_sentry_issues
+
+Query Sentry issues for one or more services. Returns recent errors and their details.
+
+**Parameters:**
+- `service_name` (string): Service name (supports fuzzy matching and variations)
+- `locale` (string, optional): Filter to specific locale (ca/us/na)
+- `query` (string, optional): Sentry query string (default: "is:unresolved"). Examples:
+  - `"is:unresolved"` - unresolved errors
+  - `"is:unresolved issue.priority:[high, medium]"` - high/medium priority
+  - `"is:unresolved assigned:me"` - assigned to me
+- `limit` (integer, optional): Max number of issues to return (default: 25)
+- `statsPeriod` (string, optional): Time period for stats - 1h, 24h, 7d, 14d, 30d (default: 24h)
+
+**Example:**
+```json
+{
+  "service_name": "auth",
+  "query": "is:unresolved issue.priority:[high, medium]",
+  "limit": 10,
+  "statsPeriod": "24h"
+}
+```
+
+### 4. get_sentry_issue_details
+
+Get detailed information about a specific Sentry issue including stack traces, breadcrumbs, and context.
+
+**Parameters:**
+- `issue_id` (string): Sentry issue ID (e.g., "18")
+
+**Example:**
+```json
+{
+  "issue_id": "18"
+}
+```
+
+### 5. search_sentry_traces
+
+Search performance traces in Sentry for one or more services. Useful for finding slow transactions.
+
+**Parameters:**
+- `service_name` (string): Service name (supports fuzzy matching)
+- `locale` (string, optional): Filter to specific locale (ca/us/na)
+- `query` (string, optional): Search query for traces (e.g., "transaction.duration:>5s" for slow traces)
+- `limit` (integer, optional): Max traces to return (default: 10)
+- `statsPeriod` (string, optional): Time period - 1h, 24h, 7d (default: 24h)
+
+**Example:**
+```json
+{
+  "service_name": "edr-proxy",
+  "query": "transaction.duration:>5s",
+  "limit": 15,
+  "statsPeriod": "7d"
+}
+```
 
 ## IDE Integration
 
@@ -635,7 +695,7 @@ This will:
 
 ## Contributing
 
-LogAI is designed for internal use at Pason. For questions or issues, contact the DevOps team.
+LogAI is designed for internal use at your organization. For questions or issues, contact the DevOps team.
 
 ## License
 

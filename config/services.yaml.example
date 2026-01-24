@@ -1,19 +1,20 @@
 services:
-  - name: "aws-ecs-web"
+  - name: "hub-ca-auth"
     type: "json"
-    description: "AWS ECS application logs in JSON format"
-    # Using specific patterns for date handling in code
-    path_pattern: "var_log/syslog/{YYYY}/{MM}/{DD}/application_logs/web-server/**/*.log"
-    path_date_formats: ["{YYYY}", "{MM}", "{DD}"] 
+    description: "Hub CA Auth Service logs"
+    path_pattern: "/syslog/application_logs/{YYYY}/{MM}/{DD}/{HH}/hub-ca-auth-kinesis-*"
+    path_date_formats: ["{YYYY}", "{MM}", "{DD}", "{HH}"]
+    # Maps to Sentry project (locale-agnostic: hub-ca-auth + hub-us-auth → auth-service)
+    sentry_service_name: "auth-service"
+    # Per-service Sentry DSN
+    sentry_dsn: "https://abc123@sentry.example.com/4"
   
-  - name: "pylons-app"
-    type: "syslog"
-    description: "Pylons web server logs in Syslog format"
-    path_pattern: "var_log/ecs/{YYYY}/{MM}/{DD}/web-server.log"
-    path_date_formats: ["{YYYY}", "{MM}", "{DD}"]
-
-  - name: "aws-ses"
+  - name: "hub-us-api"
     type: "json"
-    description: "AWS SES mail logs in JSON format"
-    path_pattern: "var_log/ses/{YYYY}/{MM}/{DD}/SES/**/*.log"
-    path_date_formats: ["{YYYY}", "{MM}", "{DD}"]
+    description: "Hub US API logs"
+    path_pattern: "/syslog/application_logs/{YYYY}/{MM}/{DD}/{HH}/hub-us-api-kinesis-*"
+    path_date_formats: ["{YYYY}", "{MM}", "{DD}", "{HH}"]
+    # hub-us-api → api-service (matches hub-ca-api)
+    sentry_service_name: "api-service"
+    # Per-service Sentry DSN
+    sentry_dsn: "https://def456@sentry.example.com/5"
