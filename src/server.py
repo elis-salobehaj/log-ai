@@ -1211,6 +1211,37 @@ Service name supports flexible matching:
         logger.info(f"search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}")
         sys.stderr.write(f"[REQUEST] search_logs: services={services}, query='{query}', time_range={time_range}, format={format_type}\n")
         
+        # Start Datadog APM trace (Phase 3.2)
+        with trace_search_operation(
+            service=",".join(services),
+            pattern=query,
+            time_range=time_range
+        ) as span:
+            try:
+                return await _execute_search(
+                    services, query, time_range, format_type, user_tz,
+                    config, start_time, span
+                )
+            except Exception as e:
+                # Tag error in span
+                if span:
+                    span.set_tag("error", True)
+                    span.set_tag("error.type", type(e).__name__)
+                    span.set_tag("error.message", str(e))
+                raise
+    
+    async def _execute_search(
+        services: list,
+        query: str,
+        time_range: dict,
+        format_type: str,
+        user_tz: str,
+        config: AppConfig,
+        start_time: float,
+        span: Any
+    ) -> list[types.TextContent]:
+        """Execute search with tracing - extracted for better trace context"""
+        
         # Add Sentry breadcrumb for search start
         if sentry_enabled:
             for svc in services:
@@ -1230,6 +1261,27 @@ Service name supports flexible matching:
             matches, metadata = cached
             metadata["cached"] = True
             metadata["duration_seconds"] = time.time() - start_time
+            
+            # Add Datadog APM tags for cache hit (Phase 3.2)
+            if span:
+                span.set_tag("cache.hit", True)
+                span.set_tag("result.count", len(matches))
+                span.set_tag("duration_ms", metadata["duration_seconds"] * 1000)
+            
+            # Record Datadog metrics (Phase 3.2)
+            record_metric(
+                "log_ai.search.duration_ms",
+                metadata["duration_seconds"] * 1000,
+                tags=[f"service:{services[0]}", "cached:true"],
+                metric_type="histogram"
+            )
+            record_metric(
+                "log_ai.search.result_count",
+                len(matches),
+                tags=[f"service:{services[0]}", "cached:true"],
+                metric_type="histogram"
+            )
+            increment_counter("log_ai.cache.hits", tags=[f"service:{services[0]}"])
             
             # Track cache hit in Sentry
             if sentry_enabled:
@@ -1331,6 +1383,52 @@ Service name supports flexible matching:
                 # Cache if successful and not too large
                 if not error_occurred and not metadata.get("overflow"):
                     cache.put(services, query, time_range, all_matches, metadata)
+                
+                # Add Datadog APM tags (Phase 3.2)
+                if span:
+                    span.set_tag("cache.hit", False)
+                    span.set_tag("result.count", len(all_matches))
+                    span.set_tag("duration_ms", duration * 1000)
+                    span.set_tag("files_searched", metadata["files_searched"])
+                    span.set_tag("overflow", metadata.get("overflow", False))
+                    if error_occurred:
+                        span.set_tag("partial_results", True)
+                
+                # Record Datadog metrics (Phase 3.2)
+                record_metric(
+                    "log_ai.search.duration_ms",
+                    duration * 1000,
+                    tags=[f"service:{services[0]}", "cached:false", f"overflow:{metadata.get('overflow', False)}"],
+                    metric_type="histogram"
+                )
+                record_metric(
+                    "log_ai.search.result_count",
+                    len(all_matches),
+                    tags=[f"service:{services[0]}", "cached:false"],
+                    metric_type="histogram"
+                )
+                record_metric(
+                    "log_ai.search.files_searched",
+                    metadata["files_searched"],
+                    tags=[f"service:{services[0]}"],
+                    metric_type="histogram"
+                )
+                increment_counter("log_ai.cache.misses", tags=[f"service:{services[0]}"])
+                
+                if metadata.get("overflow"):
+                    increment_counter("log_ai.search.overflows", tags=[f"service:{services[0]}"])
+                    # Track overflow file size
+                    if saved_file and saved_file.exists():
+                        file_size = saved_file.stat().st_size
+                        record_metric(
+                            "log_ai.overflow.file_size_bytes",
+                            file_size,
+                            tags=[f"service:{services[0]}"],
+                            metric_type="histogram"
+                        )
+                
+                if error_occurred:
+                    increment_counter("log_ai.search.timeouts", tags=[f"service:{services[0]}"])
                 
                 # Track performance in Sentry
                 if sentry_enabled:
