@@ -10,9 +10,9 @@ completion:
   - [x] Phase 3.3 - Metrics Collection ✅
   - [x] Phase 3.4 - Infrastructure Monitoring ✅
   - [x] Phase 3.5 - Log Aggregation ✅
-  - [ ] Phase 3.6 - Dashboard Setup
-  - [ ] Phase 3.7 - Alert Configuration
-  - [ ] Phase 3.8 - Integration Testing
+  - [x] Phase 3.6 - MCP Tools for Datadog Queries ✅
+  - [ ] Phase 3.7 - Dashboard Setup
+  - [ ] Phase 3.8 - Alert Configuration
   - [ ] Phase 3.9 - Documentation Update
 related_files:
   - src/server.py
@@ -58,8 +58,9 @@ This plan completes the MCP Server Enhancement roadmap by implementing **Datadog
 | **Phase 3** | Metrics Collection | ✅ 100% | ✅ 26/26 pass | ✅ Ready |
 | **Phase 3** | Infrastructure Monitoring | ✅ 100% | ✅ 26/26 pass | ✅ Ready |
 | **Phase 3** | Log Aggregation | ✅ 100% | ✅ 21/21 pass | ✅ Ready |
+| **Phase 3** | MCP Datadog Query Tools (3) | ✅ 100% | ✅ 17/17 pass | ✅ Ready |
 
-**Test Coverage**: 98/98 tests passing ✅ (31 existing + 10 Datadog SDK + 15 APM + 26 metrics + 26 infrastructure)  
+**Test Coverage**: 136/136 tests passing ✅ (31 existing + 10 SDK + 15 APM + 26 metrics + 26 infra + 21 logs + 17 queries)  
 **Code Quality**: No TODOs/FIXMEs, proper async patterns, type hints ✅
 
 ---
@@ -75,21 +76,30 @@ This plan completes the MCP Server Enhancement roadmap by implementing **Datadog
                      │ SSH + MCP (JSON-RPC over stdio)
 ┌────────────────────▼────────────────────────────────────┐
 │  LogAI MCP Server (Per-Session Process)                 │
-│  ├── 5 MCP Tools:                                        │
+│  ├── 8 MCP Tools:                                        │
 │  │   ├── search_logs (multi-service, UTC timestamps)    │
 │  │   ├── read_search_file (overflow results)            │
 │  │   ├── query_sentry_issues ✅ PHASE 2                 │
 │  │   ├── get_sentry_issue_details ✅ PHASE 2            │
-│  │   └── search_sentry_traces ✅ PHASE 2                │
+│  │   ├── search_sentry_traces ✅ PHASE 2                │
+│  │   ├── query_datadog_apm ✅ PHASE 3.6                 │
+│  │   ├── query_datadog_metrics ✅ PHASE 3.6             │
+│  │   └── query_datadog_logs ✅ PHASE 3.6                │
 │  ├── Redis Coordinator: ✅ PHASE 1                       │
 │  │   ├── Global semaphore (20 concurrent searches)      │
 │  │   ├── Shared cache (500MB, 10min TTL)                │
 │  │   └── Graceful local fallback                        │
-│  └── Sentry Integration: ✅ PHASE 2                      │
-│      ├── Per-service DSN routing                        │
-│      ├── Error capture with context                     │
-│      ├── Performance tracking                           │
-│      └── API client (issues, traces, events)            │
+│  ├── Sentry Integration: ✅ PHASE 2                      │
+│  │   ├── Per-service DSN routing                        │
+│  │   ├── Error capture with context                     │
+│  │   ├── Performance tracking                           │
+│  │   └── API client (issues, traces, events)            │
+│  └── Datadog Integration: ✅ PHASE 3 (3.1-3.6)          │
+│      ├── APM Tracing (ddtrace)                          │
+│      ├── Metrics Collection (DogStatsD)                 │
+│      ├── Infrastructure Monitoring (system metrics)     │
+│      ├── Log Aggregation (HTTP intake)                  │
+│      └── Query API (APM, metrics, logs) ✅ 3.6          │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐

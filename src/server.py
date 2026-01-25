@@ -1242,6 +1242,112 @@ Service name supports flexible matching:
                     },
                     "required": ["service_name"]
                 }
+            ),
+            types.Tool(
+                name="query_datadog_apm",
+                description="""Query Datadog APM traces for performance analysis. Find slow operations, errors, and trace details.
+
+Use this when investigating:
+- Performance issues and slow traces
+- Error patterns in APM data
+- Specific operation performance
+- Trace correlation with logs""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "Service name in Datadog (e.g., 'log-ai-mcp')"
+                        },
+                        "hours_back": {
+                            "type": "integer",
+                            "description": "How many hours to look back (default: 1)",
+                            "default": 1
+                        },
+                        "operation": {
+                            "type": "string",
+                            "description": "Optional: Filter by operation name (e.g., 'log_search')"
+                        },
+                        "min_duration_ms": {
+                            "type": "integer",
+                            "description": "Optional: Minimum duration filter for slow traces (milliseconds)"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": ["service"]
+                }
+            ),
+            types.Tool(
+                name="query_datadog_metrics",
+                description="""Query Datadog metrics for infrastructure and application monitoring.
+
+Use this when checking:
+- System metrics (CPU, memory, disk)
+- Application metrics (search duration, cache hit rate)
+- Custom metrics over time
+- Performance trends""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "metric_query": {
+                            "type": "string",
+                            "description": "Datadog metric query (e.g., 'avg:log_ai.search.duration_ms{*}' or 'avg:system.cpu.user{host:syslog}')"
+                        },
+                        "hours_back": {
+                            "type": "integer",
+                            "description": "How many hours to look back (default: 1)",
+                            "default": 1
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": ["metric_query"]
+                }
+            ),
+            types.Tool(
+                name="query_datadog_logs",
+                description="""Search Datadog aggregated logs with trace correlation.
+
+Use this when:
+- Searching centralized application logs
+- Correlating logs with traces (trace_id)
+- Finding error patterns across services
+- Analyzing log trends""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Datadog log query (e.g., 'service:log-ai-mcp status:error' or '@trace_id:123456')"
+                        },
+                        "hours_back": {
+                            "type": "integer",
+                            "description": "How many hours to look back (default: 1)",
+                            "default": 1
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default: 100)",
+                            "default": 100
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": ["query"]
+                }
             )
         ]
 
@@ -1260,6 +1366,12 @@ Service name supports flexible matching:
             return await get_sentry_issue_details_handler(arguments)
         elif name == "search_sentry_traces":
             return await search_sentry_traces_handler(arguments, config)
+        elif name == "query_datadog_apm":
+            return await query_datadog_apm_handler(arguments)
+        elif name == "query_datadog_metrics":
+            return await query_datadog_metrics_handler(arguments)
+        elif name == "query_datadog_logs":
+            return await query_datadog_logs_handler(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1970,6 +2082,219 @@ Service name supports flexible matching:
                 lines.append(f"  Project: {sentry_project}")
                 lines.append(f"  Duration: {duration:.2f}ms")
                 lines.append(f"  Timestamp: {timestamp}")
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def query_datadog_apm_handler(args: dict) -> list[types.TextContent]:
+        """Handle query_datadog_apm tool - Query APM traces from Datadog"""
+        service = args.get("service")
+        hours_back = args.get("hours_back", 1)
+        operation = args.get("operation")
+        min_duration_ms = args.get("min_duration_ms")
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] query_datadog_apm called: service={service}, hours_back={hours_back}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Calculate time range
+        from datetime import datetime, timedelta, timezone
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours_back)
+        
+        # Query Datadog APM
+        from datadog_integration import query_apm_traces
+        result = query_apm_traces(
+            service=service,
+            start_time=start_time,
+            end_time=end_time,
+            operation=operation,
+            min_duration_ms=min_duration_ms
+        )
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        traces = result.get("traces", [])
+        lines = [
+            f"=== Datadog APM Traces: {service} ===",
+            f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
+            f"Total Traces: {result['count']}",
+            ""
+        ]
+        
+        if not traces:
+            lines.append("No traces found in the specified time range.")
+        else:
+            for trace in traces[:20]:  # Show top 20
+                duration_ms = trace.get("duration_ms", 0)
+                lines.append(f"[{trace.get('timestamp', 'N/A')}] {trace.get('operation', 'unknown')}")
+                lines.append(f"  Trace ID: {trace.get('trace_id', 'N/A')}")
+                lines.append(f"  Resource: {trace.get('resource', 'N/A')}")
+                lines.append(f"  Duration: {duration_ms:.2f}ms")
+                lines.append("")
+            
+            if len(traces) > 20:
+                lines.append(f"... and {len(traces) - 20} more traces")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def query_datadog_metrics_handler(args: dict) -> list[types.TextContent]:
+        """Handle query_datadog_metrics tool - Query metrics from Datadog"""
+        metric_query = args.get("metric_query")
+        hours_back = args.get("hours_back", 1)
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] query_datadog_metrics called: query={metric_query}, hours_back={hours_back}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Calculate time range
+        from datetime import datetime, timedelta, timezone
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours_back)
+        
+        # Query Datadog Metrics
+        from datadog_integration import query_metrics
+        result = query_metrics(
+            metric_query=metric_query,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        series = result.get("series", [])
+        lines = [
+            f"=== Datadog Metrics: {metric_query} ===",
+            f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
+            f"Series Count: {len(series)}",
+            f"Status: {result.get('status', 'unknown')}",
+            ""
+        ]
+        
+        if not series:
+            lines.append("No data found for the specified metric query.")
+        else:
+            for s in series:
+                metric_name = s.get("metric", "unknown")
+                display_name = s.get("display_name", metric_name)
+                unit = s.get("unit", "")
+                points = s.get("points", [])
+                
+                lines.append(f"Metric: {display_name}")
+                if unit:
+                    lines.append(f"  Unit: {unit}")
+                lines.append(f"  Aggregation: {s.get('aggr', 'N/A')}")
+                lines.append(f"  Scope: {s.get('scope', 'N/A')}")
+                lines.append(f"  Data Points: {len(points)}")
+                
+                if points:
+                    # Show first, last, min, max, avg
+                    values = [p[1] for p in points if len(p) > 1]
+                    if values:
+                        lines.append(f"  Min: {min(values):.2f}")
+                        lines.append(f"  Max: {max(values):.2f}")
+                        lines.append(f"  Avg: {sum(values) / len(values):.2f}")
+                        lines.append(f"  Latest: {values[-1]:.2f} (at {points[-1][0]})")
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def query_datadog_logs_handler(args: dict) -> list[types.TextContent]:
+        """Handle query_datadog_logs tool - Search Datadog logs"""
+        query = args.get("query")
+        hours_back = args.get("hours_back", 1)
+        limit = args.get("limit", 100)
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] query_datadog_logs called: query={query}, hours_back={hours_back}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Calculate time range
+        from datetime import datetime, timedelta, timezone
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours_back)
+        
+        # Query Datadog Logs
+        from datadog_integration import query_logs
+        result = query_logs(
+            query=query,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit
+        )
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        logs = result.get("logs", [])
+        lines = [
+            f"=== Datadog Logs: {query} ===",
+            f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
+            f"Total Logs: {result['count']}",
+            ""
+        ]
+        
+        if not logs:
+            lines.append("No logs found matching the query.")
+        else:
+            for log in logs:
+                timestamp = log.get("timestamp", "N/A")
+                service = log.get("service", "unknown")
+                status = log.get("status", "")
+                message = log.get("message", "")
+                trace_id = log.get("trace_id", "")
+                
+                lines.append(f"[{timestamp}] {service} [{status}]")
+                lines.append(f"  Message: {message[:200]}")  # Truncate long messages
+                if trace_id:
+                    lines.append(f"  Trace ID: {trace_id}")
                 lines.append("")
         
         return [types.TextContent(type="text", text="\n".join(lines))]
