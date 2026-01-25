@@ -111,6 +111,10 @@ class Config(BaseSettings):
         default=8126,
         description="APM trace agent port"
     )
+    send_logs_to_datadog: bool = Field(
+        default=False,
+        description="Send Python application logs to Datadog for centralized search"
+    )
     
     @computed_field
     @property

@@ -50,6 +50,10 @@ from infrastructure_monitoring import (
     get_infrastructure_monitor,
     InfrastructureMonitor
 )
+from datadog_log_handler import (
+    setup_datadog_logging,
+    DatadogLogHandler
+)
 
 # =============================================================================
 # CONFIGURATION - Load from environment variables
@@ -306,6 +310,9 @@ sentry_enabled: bool = False
 # Datadog APM and metrics (Phase 3 - initialized on startup)
 datadog_enabled: bool = False
 
+# Datadog log handler (Phase 3.5 - initialized on startup)
+datadog_log_handler: Optional[DatadogLogHandler] = None
+
 
 async def init_redis():
     """Initialize Redis connection for distributed coordination"""
@@ -338,6 +345,14 @@ async def shutdown_redis():
         sys.stderr.write("[REDIS] Connection closed\n")
 
 
+def shutdown_datadog_logs():
+    """Cleanup Datadog log handler on shutdown"""
+    global datadog_log_handler
+    if datadog_log_handler:
+        datadog_log_handler.stop()
+        sys.stderr.write("[DATADOG] Log handler stopped and flushed\n")
+
+
 def init_sentry_on_startup():
     """Initialize Sentry error tracking"""
     global sentry_enabled
@@ -362,7 +377,7 @@ def init_sentry_on_startup():
 
 def init_datadog_on_startup():
     """Initialize Datadog APM and metrics (Phase 3)"""
-    global datadog_enabled
+    global datadog_enabled, datadog_log_handler
     
     # Check if Datadog is configured
     if not config.dd_configured:
@@ -384,6 +399,25 @@ def init_datadog_on_startup():
     
     if datadog_enabled:
         sys.stderr.write(f"[DATADOG] Enabled: service={config.dd_service_name}, env={config.dd_env}\n")
+        
+        # Phase 3.5: Setup log aggregation if configured
+        if config.send_logs_to_datadog:
+            sys.stderr.write("[DATADOG] Setting up log aggregation...\n")
+            datadog_log_handler = setup_datadog_logging(
+                api_key=config.dd_api_key,
+                service=config.dd_service_name,
+                env=config.dd_env,
+                site=config.dd_site,
+                logger_name="log-ai",
+                level=log_level
+            )
+            
+            if datadog_log_handler:
+                sys.stderr.write("[DATADOG] Log aggregation enabled - logs will be sent to Datadog\n")
+            else:
+                sys.stderr.write("[DATADOG] Log aggregation setup failed\n")
+        else:
+            sys.stderr.write("[DATADOG] Log aggregation disabled (SEND_LOGS_TO_DATADOG=false)\n")
     else:
         sys.stderr.write("[DATADOG] Initialization failed, continuing without APM/metrics\n")
 
@@ -1955,4 +1989,7 @@ if __name__ == "__main__":
         # Cleanup Redis connection
         if redis_coordinator:
             asyncio.run(shutdown_redis())
+        
+        # Cleanup Datadog log handler (Phase 3.5)
+        shutdown_datadog_logs()
 
