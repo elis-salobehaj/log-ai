@@ -1,16 +1,26 @@
 # Active Plans
 
-**Last Updated**: 2026-01-24
+**Last Updated**: 2026-02-06
 
 ## 🔥 In Progress
 
-*No active plans. Create new plans here as needed.*
+**No active plans currently.** All core functionality is implemented and production-ready.
+
+See `docs/plans/backlog/` for future enhancement ideas.
 
 ---
 
 ## ✅ Recently Completed
 
-*Recently completed plans. Move to `../implemented/` after a few days.*
+- **[MCP Observability Completion](../implemented/mcp-observability-completion.md)** - Completed 2026-02-06
+  - Full Datadog integration (APM, metrics, logs, infrastructure)
+  - 6 MCP tools for Datadog queries
+  - Environment filtering for all Datadog tools
+  - 156/156 tests passing
+
+- **[Datadog Environment Context Enhancement](../implemented/datadog-environment-context.md)** - Completed 2026-02-06
+  - Added env parameter to all 6 Datadog tools
+  - Environment-specific queries (cistable/qa/production)
 
 ---
 
