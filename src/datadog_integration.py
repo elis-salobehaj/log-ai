@@ -48,7 +48,7 @@ def init_datadog(
     app_key: str,
     site: str = "datadoghq.com",
     service_name: str = "log-ai-mcp",
-    env: str = "production",
+    env: str = "qa",
     version: str = "1.0.0",
     agent_host: str = "localhost",
     agent_port: int = 8125,
@@ -65,7 +65,7 @@ def init_datadog(
         app_key: Datadog Application key (for API queries)
         site: Datadog site (datadoghq.com, datadoghq.eu, etc.)
         service_name: Service name for APM traces
-        env: Environment (production, staging, development)
+        env: Environment (production, qa, cistable)
         version: Application version for release tracking
         agent_host: Datadog Agent hostname
         agent_port: DogStatsD port (default: 8125)
@@ -292,7 +292,8 @@ def query_apm_traces(
     end_time: datetime,
     operation: Optional[str] = None,
     min_duration_ms: Optional[int] = None,
-    limit: int = 100
+    limit: int = 100,
+    env: Optional[str] = None  # New: environment filter
 ) -> Dict[str, Any]:
     """
     Query APM traces from Datadog APM API.
@@ -304,6 +305,7 @@ def query_apm_traces(
         operation: Optional operation name filter (e.g., "log_search")
         min_duration_ms: Optional minimum duration filter (milliseconds)
         limit: Maximum number of traces to return (default: 100)
+        env: Optional environment filter ("cistable", "qa", "production")
         
     Returns:
         Dict with traces and metadata:
@@ -326,6 +328,8 @@ def query_apm_traces(
         
         # Build query filter
         query_parts = [f"service:{service}"]
+        if env:  # New: add environment filter
+            query_parts.append(f"env:{env}")
         if operation:
             query_parts.append(f"operation_name:{operation}")
         if min_duration_ms:
@@ -386,7 +390,8 @@ def query_apm_traces(
 def query_metrics(
     metric_query: str,
     start_time: datetime,
-    end_time: datetime
+    end_time: datetime,
+    env: Optional[str] = None  # New: environment filter
 ) -> Dict[str, Any]:
     """
     Query metrics from Datadog Metrics API.
@@ -395,6 +400,7 @@ def query_metrics(
         metric_query: Datadog metric query (e.g., "avg:log_ai.search.duration_ms{*}")
         start_time: Start time (UTC)
         end_time: End time (UTC)
+        env: Optional environment filter ("cistable", "qa", "production")
         
     Returns:
         Dict with metric data:
@@ -416,6 +422,25 @@ def query_metrics(
         # Use V1 API for metric queries (more stable)
         api_instance = MetricsApiV1(_api_client)
         
+        # New: Inject env filter into metric query if provided and not already present
+        final_query = metric_query
+        if env and "env:" not in metric_query:
+            # Inject env into the tag filter part
+            # Example: "avg:metric{*}" -> "avg:metric{env:qa}"
+            # Example: "avg:metric{tag1:value1}" -> "avg:metric{tag1:value1,env:qa}"
+            if "{" in metric_query and "}" in metric_query:
+                # Split at the closing brace
+                before_brace = metric_query[:metric_query.rindex("}")]
+                after_brace = metric_query[metric_query.rindex("}"):]
+                # Check if wildcard or has tags
+                if before_brace.endswith("{*"):
+                    final_query = before_brace[:-1] + f"env:{env}" + after_brace
+                else:
+                    final_query = before_brace + f",env:{env}" + after_brace
+            else:
+                # No tag filter, add one
+                final_query = metric_query + f"{{env:{env}}}"
+        
         # Convert to Unix timestamps
         start_ts = int(start_time.timestamp())
         end_ts = int(end_time.timestamp())
@@ -424,7 +449,7 @@ def query_metrics(
         response = api_instance.query_metrics(
             _from=start_ts,
             to=end_ts,
-            query=metric_query
+            query=final_query  # Use modified query with env filter
         )
         
         # Extract series data
@@ -442,7 +467,7 @@ def query_metrics(
         
         return {
             "series": series,
-            "query": metric_query,
+            "query": final_query,  # Return modified query
             "time_range": {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat()
@@ -462,7 +487,8 @@ def query_logs(
     query: str,
     start_time: datetime,
     end_time: datetime,
-    limit: int = 100
+    limit: int = 100,
+    env: Optional[str] = None  # New: environment filter
 ) -> Dict[str, Any]:
     """
     Query logs from Datadog Log Management API.
@@ -472,6 +498,7 @@ def query_logs(
         start_time: Start time (UTC)
         end_time: End time (UTC)
         limit: Maximum number of logs to return (default: 100)
+        env: Optional environment filter ("cistable", "qa", "production")
         
     Returns:
         Dict with log entries:
@@ -494,10 +521,15 @@ def query_logs(
         # Create API instance
         api_instance = LogsApi(_api_client)
         
+        # New: Inject env filter if provided and not already present
+        final_query = query
+        if env and "env:" not in query:
+            final_query = f"{query} env:{env}"
+        
         # Use list_logs_get (GET method - much simpler than POST)
         # Accepts datetime objects directly
         response = api_instance.list_logs_get(
-            filter_query=query,
+            filter_query=final_query,  # Use modified query with env filter
             filter_from=start_time,
             filter_to=end_time,
             sort=LogsSort.TIMESTAMP_DESCENDING,
@@ -521,7 +553,7 @@ def query_logs(
         return {
             "logs": logs,
             "count": len(logs),
-            "query": query,
+            "query": final_query,  # Return modified query
             "time_range": {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat()
@@ -539,7 +571,8 @@ def query_logs(
 def list_monitors(
     service: Optional[str] = None,
     status_filter: Optional[List[str]] = None,
-    limit: int = 50
+    limit: int = 50,
+    env: Optional[str] = None  # New: environment filter
 ) -> Dict[str, Any]:
     """
     List Datadog monitors with current status.
@@ -554,6 +587,7 @@ def list_monitors(
         status_filter: Filter by status (e.g., ["Alert", "Warn", "No Data"])  
                        Use ["all"] or None to get all statuses
         limit: Maximum monitors to return (default: 50)
+        env: Optional environment filter ("cistable", "qa", "production")
         
     Returns:
         Dict with monitors and their status:
@@ -592,7 +626,13 @@ def list_monitors(
         api_instance = MonitorsApi(_api_client)
         
         # Build monitor tags filter
-        monitor_tags = f"service:{service}" if service else None
+        monitor_tags = None
+        if service and env:
+            monitor_tags = f"service:{service},env:{env}"  # Both service and env
+        elif service:
+            monitor_tags = f"service:{service}"  # Service only
+        elif env:
+            monitor_tags = f"env:{env}"  # Env only
         
         # Build group states filter (comma-separated)
         group_states = None
@@ -659,7 +699,8 @@ def search_events(
     start_time: datetime,
     end_time: datetime,
     sources: Optional[List[str]] = None,
-    limit: int = 100
+    limit: int = 100,
+    env: Optional[str] = None  # New: environment filter
 ) -> Dict[str, Any]:
     """
     Search Datadog events timeline for deployments, incidents, and changes.
@@ -675,6 +716,7 @@ def search_events(
         end_time: End time (UTC)
         sources: Filter by event sources (e.g., ["deployment", "alert", "incident"])
         limit: Maximum events (default: 100)
+        env: Optional environment filter ("cistable", "qa", "production")
         
     Returns:
         Dict with events timeline:
@@ -706,9 +748,15 @@ def search_events(
         
         # Build filter query
         filter_query = query
+        
+        # New: Add env filter if provided and not already present
+        if env and "env:" not in query:
+            filter_query = f"{query} env:{env}"
+        
+        # Add sources filter if provided
         if sources:
             source_filter = " OR ".join([f"source:{src}" for src in sources])
-            filter_query = f"({query}) AND ({source_filter})"
+            filter_query = f"({filter_query}) AND ({source_filter})"
         
         # Create API instance
         api_instance = EventsApi(_api_client)
@@ -760,7 +808,8 @@ def search_events(
 
 
 def get_service_dependencies(
-    service: str
+    service: str,
+    env: Optional[str] = None  # New: environment filter (note: Service Catalog may not support env filtering)
 ) -> Dict[str, Any]:
     """
     Get APM service dependencies from Datadog Service Catalog.
@@ -773,6 +822,7 @@ def get_service_dependencies(
     
     Args:
         service: Service name (e.g., "pason-auth-service")
+        env: Optional environment filter (note: Service Catalog queries may not support env filtering)
         
     Returns:
         Dict with service dependencies and metadata:

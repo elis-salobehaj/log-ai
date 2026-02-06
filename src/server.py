@@ -1280,6 +1280,11 @@ Use this when investigating:
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     },
                     "required": ["service"]
@@ -1311,6 +1316,11 @@ Use this when checking:
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     },
                     "required": ["metric_query"]
@@ -1347,6 +1357,11 @@ Use this when:
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     },
                     "required": ["query"]
@@ -1387,6 +1402,11 @@ Service name resolution: Input service names are automatically mapped to Datadog
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     }
                 }
@@ -1430,6 +1450,11 @@ Critical for root cause analysis and deployment correlation.""",
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     },
                     "required": ["query"]
@@ -1458,6 +1483,11 @@ Service name resolution: Input service names are automatically mapped to Datadog
                             "enum": ["text", "json"],
                             "description": "Output format (default: text)",
                             "default": "text"
+                        },
+                        "env": {
+                            "type": "string",
+                            "enum": ["cistable", "qa", "production"],
+                            "description": "Optional: Environment filter (cistable=dev, qa=staging, production=prod)"
                         }
                     },
                     "required": ["service"]
@@ -2213,8 +2243,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         operation = args.get("operation")
         min_duration_ms = args.get("min_duration_ms")
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] query_datadog_apm called: service={service}, hours_back={hours_back}")
+        logger.debug(f"[DATADOG] query_datadog_apm called: service={service}, hours_back={hours_back}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2242,7 +2273,8 @@ Service name resolution: Input service names are automatically mapped to Datadog
             start_time=start_time,
             end_time=end_time,
             operation=operation,
-            min_duration_ms=min_duration_ms
+            min_duration_ms=min_duration_ms,
+            env=env  # New: pass environment filter
         )
         
         # Handle error
@@ -2258,10 +2290,24 @@ Service name resolution: Input service names are automatically mapped to Datadog
         
         # Text format
         traces = result.get("traces", [])
+        
+        # Build Datadog URL for APM traces
+        from urllib.parse import quote
+        query_parts = [f"service:{datadog_service}"]
+        if env:
+            query_parts.append(f"env:{env}")
+        if operation:
+            query_parts.append(f"operation_name:{operation}")
+        if min_duration_ms:
+            query_parts.append(f"@duration:>{min_duration_ms}ms")
+        apm_query = " ".join(query_parts)
+        datadog_url = f"https://app.datadoghq.com/apm/traces?query={quote(apm_query)}"
+        
         lines = [
             f"=== Datadog APM Traces: {service} ===",
             f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
             f"Total Traces: {result['count']}",
+            f"Datadog URL: {datadog_url}",
             ""
         ]
         
@@ -2286,8 +2332,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         metric_query = args.get("metric_query")
         hours_back = args.get("hours_back", 1)
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] query_datadog_metrics called: query={metric_query}, hours_back={hours_back}")
+        logger.debug(f"[DATADOG] query_datadog_metrics called: query={metric_query}, hours_back={hours_back}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2306,7 +2353,8 @@ Service name resolution: Input service names are automatically mapped to Datadog
         result = query_metrics(
             metric_query=metric_query,
             start_time=start_time,
-            end_time=end_time
+            end_time=end_time,
+            env=env  # New: pass environment filter
         )
         
         # Handle error
@@ -2364,8 +2412,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         hours_back = args.get("hours_back", 1)
         limit = args.get("limit", 100)
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] query_datadog_logs called: query={query}, hours_back={hours_back}")
+        logger.debug(f"[DATADOG] query_datadog_logs called: query={query}, hours_back={hours_back}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2385,7 +2434,8 @@ Service name resolution: Input service names are automatically mapped to Datadog
             query=query,
             start_time=start_time,
             end_time=end_time,
-            limit=limit
+            limit=limit,
+            env=env  # New: pass environment filter
         )
         
         # Handle error
@@ -2401,10 +2451,17 @@ Service name resolution: Input service names are automatically mapped to Datadog
         
         # Text format
         logs = result.get("logs", [])
+        
+        # Build Datadog URL for logs
+        from urllib.parse import quote
+        final_query = result.get("query", query)  # Get query with env filter if applied
+        datadog_url = f"https://app.datadoghq.com/logs?query={quote(final_query)}"
+        
         lines = [
             f"=== Datadog Logs: {query} ===",
             f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
             f"Total Logs: {result['count']}",
+            f"Datadog URL: {datadog_url}",
             ""
         ]
         
@@ -2432,8 +2489,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         status_filter = args.get("status_filter")
         limit = args.get("limit", 50)
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] list_datadog_monitors called: service={service}, status_filter={status_filter}")
+        logger.debug(f"[DATADOG] list_datadog_monitors called: service={service}, status_filter={status_filter}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2455,7 +2513,8 @@ Service name resolution: Input service names are automatically mapped to Datadog
         result = list_monitors(
             service=datadog_service,
             status_filter=status_filter,
-            limit=limit
+            limit=limit,
+            env=env  # New: pass environment filter
         )
         
         # Handle error
@@ -2510,8 +2569,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         sources = args.get("sources")
         limit = args.get("limit", 100)
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] search_datadog_events called: query={query}, hours_back={hours_back}")
+        logger.debug(f"[DATADOG] search_datadog_events called: query={query}, hours_back={hours_back}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2532,7 +2592,8 @@ Service name resolution: Input service names are automatically mapped to Datadog
             start_time=start_time,
             end_time=end_time,
             sources=sources,
-            limit=limit
+            limit=limit,
+            env=env  # New: pass environment filter
         )
         
         # Handle error
@@ -2548,11 +2609,18 @@ Service name resolution: Input service names are automatically mapped to Datadog
         
         # Text format
         events = result.get("events", [])
+        
+        # Build Datadog URL for events
+        from urllib.parse import quote
+        final_query = result.get("query", query)  # Get query with env filter if applied
+        datadog_url = f"https://app.datadoghq.com/event/explorer?query={quote(final_query)}"
+        
         lines = [
             f"=== Datadog Events ===",
             f"Query: {result['query']}",
             f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
             f"Total Events: {result['count']}",
+            f"Datadog URL: {datadog_url}",
             ""
         ]
         
@@ -2587,8 +2655,9 @@ Service name resolution: Input service names are automatically mapped to Datadog
         """Handle get_service_dependencies tool - Get service topology"""
         service = args.get("service")
         format_type = args.get("format", "text")
+        env = args.get("env")  # New: environment filter
         
-        logger.debug(f"[DATADOG] get_service_dependencies called: service={service}")
+        logger.debug(f"[DATADOG] get_service_dependencies called: service={service}, env={env}")
         
         # Check if Datadog is configured
         if not datadog_enabled:
@@ -2606,7 +2675,7 @@ Service name resolution: Input service names are automatically mapped to Datadog
         
         # Query service dependencies
         from src.datadog_integration import get_service_dependencies
-        result = get_service_dependencies(service=datadog_service)
+        result = get_service_dependencies(service=datadog_service, env=env)  # New: pass environment filter
         
         # Handle error
         if "error" in result:
