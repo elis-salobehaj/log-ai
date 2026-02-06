@@ -19,15 +19,15 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
-from config import load_config, find_log_files, AppConfig, resolve_service_names, find_similar_services
-from config_loader import get_config
-from redis_coordinator import (
+from src.config import load_config, find_log_files, AppConfig, resolve_service_names, find_similar_services
+from src.config_loader import get_config
+from src.redis_coordinator import (
     RedisCoordinator,
     RedisSemaphore,
     RedisCache,
     RedisMetrics
 )
-from sentry_integration import (
+from src.sentry_integration import (
     init_sentry,
     capture_search_performance,
     capture_error_context,
@@ -35,22 +35,25 @@ from sentry_integration import (
     set_user_context,
     get_sentry_api
 )
-from datadog_integration import (
+from src.datadog_integration import (
     init_datadog,
     trace_search_operation,
     record_metric,
     increment_counter,
-    is_configured as is_datadog_configured
+    is_configured as is_datadog_configured,
+    list_monitors,
+    search_events,
+    get_service_dependencies
 )
-from metrics_collector import (
+from src.metrics_collector import (
     get_metrics_collector,
     MetricsCollector
 )
-from infrastructure_monitoring import (
+from src.infrastructure_monitoring import (
     get_infrastructure_monitor,
     InfrastructureMonitor
 )
-from datadog_log_handler import (
+from src.datadog_log_handler import (
     setup_datadog_logging,
     DatadogLogHandler
 )
@@ -1348,6 +1351,117 @@ Use this when:
                     },
                     "required": ["query"]
                 }
+            ),
+            types.Tool(
+                name="list_datadog_monitors",
+                description="""List Datadog monitors with current status, including triggered alerts.
+
+Use this when investigating:
+- What alerts are currently active
+- Which monitors cover a specific service
+- Historical alert patterns for incident response
+
+Service name resolution: Input service names are automatically mapped to Datadog service names using datadog_service_name field.""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "Optional: Filter by service name (e.g., 'hub-ca-auth' or 'pason-auth-service')"
+                        },
+                        "status_filter": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["Alert", "Warn", "No Data", "OK"]
+                            },
+                            "description": "Optional: Filter by monitor status (e.g., ['Alert', 'Warn'])"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum monitors to return (default: 50)",
+                            "default": 50
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    }
+                }
+            ),
+            types.Tool(
+                name="search_datadog_events",
+                description="""Search Datadog events timeline for deployments, incidents, anomalies, and system changes.
+
+Use this when investigating:
+- Was there a deployment around the time errors started?
+- What system changes correlate with issues?
+- Building incident timelines
+
+Critical for root cause analysis and deployment correlation.""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Event query (e.g., 'tags:service:auth' or 'source:deployment')"
+                        },
+                        "hours_back": {
+                            "type": "integer",
+                            "description": "How many hours to look back (default: 24)",
+                            "default": 24
+                        },
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Optional: Filter by event sources (e.g., ['deployment', 'alert', 'incident'])"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum events to return (default: 100)",
+                            "default": 100
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            ),
+            types.Tool(
+                name="get_service_dependencies",
+                description="""Get APM service dependencies from Datadog Service Catalog.
+
+Use this when investigating:
+- What services depend on this service (blast radius)
+- What services this service depends on (upstream dependencies)
+- Service topology and architecture understanding
+- Team ownership and service metadata
+
+Service name resolution: Input service names are automatically mapped to Datadog service names.""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "Service name (e.g., 'hub-ca-auth' or 'pason-auth-service')"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": ["service"]
+                }
             )
         ]
 
@@ -1372,6 +1486,12 @@ Use this when:
             return await query_datadog_metrics_handler(arguments)
         elif name == "query_datadog_logs":
             return await query_datadog_logs_handler(arguments)
+        elif name == "list_datadog_monitors":
+            return await list_datadog_monitors_handler(arguments)
+        elif name == "search_datadog_events":
+            return await search_datadog_events_handler(arguments)
+        elif name == "get_service_dependencies":
+            return await get_service_dependencies_handler(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -2103,15 +2223,22 @@ Use this when:
                 text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
             )]
         
+        # Resolve service name to Datadog service name
+        datadog_service = service  # Default to input service name
+        target_service = next((s for s in config.services if s.name == service), None)
+        if target_service and target_service.datadog_service_name:
+            datadog_service = target_service.datadog_service_name
+            logger.debug(f"[DATADOG] Mapped {service} -> {datadog_service}")
+        
         # Calculate time range
         from datetime import datetime, timedelta, timezone
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(hours=hours_back)
         
         # Query Datadog APM
-        from datadog_integration import query_apm_traces
+        from src.datadog_integration import query_apm_traces
         result = query_apm_traces(
-            service=service,
+            service=datadog_service,
             start_time=start_time,
             end_time=end_time,
             operation=operation,
@@ -2175,7 +2302,7 @@ Use this when:
         start_time = end_time - timedelta(hours=hours_back)
         
         # Query Datadog Metrics
-        from datadog_integration import query_metrics
+        from src.datadog_integration import query_metrics
         result = query_metrics(
             metric_query=metric_query,
             start_time=start_time,
@@ -2253,7 +2380,7 @@ Use this when:
         start_time = end_time - timedelta(hours=hours_back)
         
         # Query Datadog Logs
-        from datadog_integration import query_logs
+        from src.datadog_integration import query_logs
         result = query_logs(
             query=query,
             start_time=start_time,
@@ -2296,6 +2423,245 @@ Use this when:
                 if trace_id:
                     lines.append(f"  Trace ID: {trace_id}")
                 lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def list_datadog_monitors_handler(args: dict) -> list[types.TextContent]:
+        """Handle list_datadog_monitors tool - List active monitors"""
+        service = args.get("service")
+        status_filter = args.get("status_filter")
+        limit = args.get("limit", 50)
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] list_datadog_monitors called: service={service}, status_filter={status_filter}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Resolve service name to Datadog service name
+        datadog_service = service
+        if service:
+            target_service = next((s for s in config.services if s.name == service), None)
+            if target_service and target_service.datadog_service_name:
+                datadog_service = target_service.datadog_service_name
+                logger.debug(f"[DATADOG] Resolved service '{service}' -> '{datadog_service}'")
+        
+        # Query Datadog Monitors
+        from src.datadog_integration import list_monitors
+        result = list_monitors(
+            service=datadog_service,
+            status_filter=status_filter,
+            limit=limit
+        )
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        monitors = result.get("monitors", [])
+        lines = [
+            f"=== Datadog Monitors ===",
+            f"Filters: service={datadog_service or 'all'}, status={status_filter or 'all'}",
+            f"Total Monitors: {result['count']}",
+            ""
+        ]
+        
+        if not monitors:
+            lines.append("No monitors found matching the filters.")
+        else:
+            for monitor in monitors:
+                monitor_id = monitor.get("id", "N/A")
+                name = monitor.get("name", "Unknown")
+                status = monitor.get("status", "Unknown")
+                mon_type = monitor.get("type", "N/A")
+                tags = monitor.get("tags", [])
+                
+                status_icon = {
+                    "Alert": "🔴",
+                    "Warn": "🟡",
+                    "No Data": "⚪",
+                    "OK": "🟢"
+                }.get(status, "❓")
+                
+                lines.append(f"{status_icon} [{monitor_id}] {name}")
+                lines.append(f"   Status: {status} | Type: {mon_type}")
+                if tags:
+                    lines.append(f"   Tags: {', '.join(tags[:5])}")  # Show first 5 tags
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def search_datadog_events_handler(args: dict) -> list[types.TextContent]:
+        """Handle search_datadog_events tool - Search events timeline"""
+        query = args.get("query")
+        hours_back = args.get("hours_back", 24)
+        sources = args.get("sources")
+        limit = args.get("limit", 100)
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] search_datadog_events called: query={query}, hours_back={hours_back}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Calculate time range
+        from datetime import datetime, timedelta, timezone
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours_back)
+        
+        # Query Datadog Events
+        from src.datadog_integration import search_events
+        result = search_events(
+            query=query,
+            start_time=start_time,
+            end_time=end_time,
+            sources=sources,
+            limit=limit
+        )
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        events = result.get("events", [])
+        lines = [
+            f"=== Datadog Events ===",
+            f"Query: {result['query']}",
+            f"Time Range: {result['time_range']['start']} to {result['time_range']['end']} UTC",
+            f"Total Events: {result['count']}",
+            ""
+        ]
+        
+        if not events:
+            lines.append("No events found matching the query.")
+        else:
+            for event in events:
+                timestamp = event.get("timestamp", "N/A")
+                title = event.get("title", "No title")
+                source = event.get("source", "unknown")
+                text = event.get("text", "")
+                tags = event.get("tags", [])
+                
+                source_icon = {
+                    "deployment": "🚀",
+                    "alert": "🚨",
+                    "incident": "🔥",
+                    "monitor": "📊"
+                }.get(source.lower(), "📝")
+                
+                lines.append(f"{source_icon} [{timestamp}] {title}")
+                lines.append(f"   Source: {source}")
+                if text:
+                    lines.append(f"   Details: {text[:150]}")  # Truncate long text
+                if tags:
+                    lines.append(f"   Tags: {', '.join(tags[:5])}")
+                lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
+    async def get_service_dependencies_handler(args: dict) -> list[types.TextContent]:
+        """Handle get_service_dependencies tool - Get service topology"""
+        service = args.get("service")
+        format_type = args.get("format", "text")
+        
+        logger.debug(f"[DATADOG] get_service_dependencies called: service={service}")
+        
+        # Check if Datadog is configured
+        if not datadog_enabled:
+            return [types.TextContent(
+                type="text",
+                text="Error: Datadog not configured. Set DD_ENABLED=true and provide DD_API_KEY and DD_APP_KEY in config/.env"
+            )]
+        
+        # Resolve service name to Datadog service name
+        datadog_service = service
+        target_service = next((s for s in config.services if s.name == service), None)
+        if target_service and target_service.datadog_service_name:
+            datadog_service = target_service.datadog_service_name
+            logger.debug(f"[DATADOG] Resolved service '{service}' -> '{datadog_service}'")
+        
+        # Query service dependencies
+        from src.datadog_integration import get_service_dependencies
+        result = get_service_dependencies(service=datadog_service)
+        
+        # Handle error
+        if "error" in result:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: {result['error']}\n{result.get('suggestion', '')}"
+            )]
+        
+        # Format response
+        if format_type == "json":
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Text format
+        service_name = result.get("service", "Unknown")
+        deps = result.get("dependencies", {})
+        metadata = result.get("metadata", {})
+        available = result.get("available", True)
+        
+        lines = [
+            f"=== Service Dependencies: {service_name} ===",
+            ""
+        ]
+        
+        if not available:
+            lines.append("⚠️  Service not found in Datadog Service Catalog")
+            lines.append("")
+            lines.append(metadata.get("note", ""))
+            lines.append(f"Suggestion: {metadata.get('suggestion', '')}")
+        else:
+            # Upstream dependencies
+            upstream = deps.get("upstream", [])
+            lines.append(f"📤 Upstream Dependencies ({len(upstream)}):")
+            if upstream:
+                for dep in upstream:
+                    lines.append(f"   → {dep}")
+            else:
+                lines.append("   (none)")
+            lines.append("")
+            
+            # Downstream dependencies
+            downstream = deps.get("downstream", [])
+            lines.append(f"📥 Downstream Dependencies ({len(downstream)}):")
+            if downstream:
+                for dep in downstream:
+                    lines.append(f"   ← {dep}")
+            else:
+                lines.append("   (none - requires Service Catalog)")
+            lines.append("")
+            
+            # Metadata
+            if metadata:
+                lines.append("📋 Service Metadata:")
+                for key, value in metadata.items():
+                    if key not in ['links'] and value:
+                        lines.append(f"   {key.capitalize()}: {value}")
         
         return [types.TextContent(type="text", text="\n".join(lines))]
 

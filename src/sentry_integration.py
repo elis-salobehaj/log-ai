@@ -6,8 +6,8 @@ import os
 import logging
 import requests
 from typing import Optional, Dict, List, Any
-from config import ServiceConfig
-from config_loader import get_config
+from src.config import ServiceConfig
+from src.config_loader import get_config
 
 def init_sentry():
     """Initialize Sentry SDK with default/fallback DSN (per-service DSNs used at capture time)"""
@@ -307,8 +307,9 @@ class SentryAPI:
         config = get_config()
         self.org = config.org_name  # Organization name from config
         
-        self.auth_token = os.environ.get("SENTRY_AUTH_TOKEN")
+        self.auth_token = config.sentry_auth_token
         self.environment = os.environ.get("SENTRY_ENVIRONMENT", "qa")
+        self._project_cache: Dict[str, int] = {}  # Cache for service \u2192 project ID mapping
         
         if not self.auth_token:
             print("[SENTRY API] WARNING: SENTRY_AUTH_TOKEN not set, API queries disabled")
@@ -324,38 +325,101 @@ class SentryAPI:
         """Check if API is configured and available"""
         return bool(self.auth_token and self.base_url)
     
-    def query_issues(
-        self,
-        project: str,
-        query: str = "is:unresolved",
-        limit: int = 25,
-        statsPeriod: str = "24h"
-    ) -> Dict[str, Any]:
+    def _get_project_id(self, service_name: str) -> Optional[int]:
         """
-        Query issues for a specific project
+        Resolve service name to Sentry project ID.
+        Searches for project with matching slug containing the service name.
         
         Args:
-            project: Project slug (e.g., "auth-service")
+            service_name: Service name (e.g., "auth", "hub-ca-auth")
+            
+        Returns:
+            Project ID or None if not found
+        """
+        # Check cache first
+        if service_name in self._project_cache:
+            return self._project_cache[service_name]
+        
+        try:
+            # Fetch all projects
+            url = f"{self.base_url}/api/0/organizations/{self.org}/projects/"
+            response = requests.get(url, headers=self._headers(), timeout=10)
+            response.raise_for_status()
+            
+            projects = response.json()
+            
+            # Try exact match first
+            for p in projects:
+                if p['slug'].lower() == service_name.lower():
+                    self._project_cache[service_name] = p['id']
+                    return p['id']
+            
+            # Try partial match (e.g., "auth" → "auth-service")
+            service_clean = service_name.lower().replace('hub-ca-', '').replace('hub-us-', '').replace('hub-na-', '').replace('-', '')
+            for p in projects:
+                slug_clean = p['slug'].lower().replace('-', '')
+                if service_clean in slug_clean or slug_clean in service_clean:
+                    self._project_cache[service_name] = p['id']
+                    return p['id']
+                    
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to resolve project ID for {service_name}: {e}")
+            return None
+    
+    def query_issues(
+        self,
+        service_name: Optional[str] = None,
+        project: Optional[str] = None,
+        query: str = "is:unresolved",
+        limit: int = 25,
+        statsPeriod: str = "24h",
+        include_environment: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Query issues for a specific project or service.
+        
+        Args:
+            service_name: Service name (e.g., "auth", "hub-ca-auth") - will be resolved to project ID
+            project: Project ID (numeric) - use if known, otherwise service_name is resolved
             query: Sentry query string (e.g., "is:unresolved issue.priority:[high, medium]")
             limit: Max number of issues to return
             statsPeriod: Time period for stats (1h, 24h, 7d, 14d, 30d)
+            include_environment: Whether to filter by environment (default: False)
         
         Returns:
             Dict with issues data or error
         
-        Example URL: 
-        https://sentry.{ORG_DOMAIN}/api/0/organizations/{ORG_NAME}/issues/
-            ?project=auth-service&query=is:unresolved&environment=qa
+        Example:
+            query_issues(service_name="auth", query="is:unresolved", limit=10)
         """
         if not self.is_available():
             return {"error": "Sentry API not configured (missing SENTRY_AUTH_TOKEN)"}
         
+        # Resolve service_name to project ID if needed
+        if service_name and not project:
+            project_id = self._get_project_id(service_name)
+            if not project_id:
+                return {
+                    "error": f"Could not find Sentry project for service: {service_name}",
+                    "suggestion": "Check that the service has a corresponding Sentry project"
+                }
+            project = str(project_id)
+        elif not project:
+            return {"error": "Must provide either service_name or project parameter"}
+        
         try:
             url = f"{self.base_url}/api/0/organizations/{self.org}/issues/"
             
+            # Build query string
+            query_str = query
+            if include_environment:
+                query_str = f"{query} environment:{self.environment}"
+            
             params = {
                 "project": project,
-                "query": f"{query} environment:{self.environment}",
+                "query": query_str,
                 "limit": limit,
                 "statsPeriod": statsPeriod
             }
@@ -367,10 +431,10 @@ class SentryAPI:
             
             return {
                 "success": True,
-                "project": project,
-                "environment": self.environment,
+                "service": service_name if service_name else f"project-{project}",
+                "project_id": project,
                 "count": len(issues),
-                "issues": issues[:limit],  # Limit response size
+                "issues": issues[:limit],
                 "query": query
             }
             
@@ -378,7 +442,7 @@ class SentryAPI:
             return {
                 "success": False,
                 "error": f"Sentry API request failed: {str(e)}",
-                "project": project
+                "service": service_name if service_name else f"project-{project}"
             }
     
     def get_issue_details(self, issue_id: str) -> Dict[str, Any]:

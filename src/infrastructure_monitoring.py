@@ -20,7 +20,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 
-from datadog_integration import record_metric, is_configured as is_datadog_configured
+from src.datadog_integration import record_metric, is_configured as is_datadog_configured
 
 logger = logging.getLogger("log-ai.infrastructure")
 

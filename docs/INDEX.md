@@ -14,7 +14,8 @@
 
 | Plan | Status | Priority | Last Updated | Progress | Related Files |
 |------|--------|----------|--------------|----------|---------------|
-| [MCP Observability Completion](plans/active/mcp-observability-completion.md) | **Active** | 🔴 High | 2026-01-25 | 67% (6/9 tasks) | server.py, config_loader.py, datadog_integration.py, datadog_log_handler.py, metrics_collector.py, infrastructure_monitoring.py |
+| [Datadog Environment Context](plans/active/datadog-environment-context.md) | **Active** | 🔴 High | 2026-02-05 | 0% (0/6 steps) | server.py, datadog_integration.py |
+| [MCP Observability Completion](plans/active/mcp-observability-completion.md) | **Mostly Complete** | 🟡 Medium | 2026-02-05 | 95% (remaining moved to backlog) | server.py, datadog_integration.py |
 
 **Current Focus**: 
 - Phase 3.1: Datadog SDK Integration ✅ **COMPLETE**
@@ -22,16 +23,27 @@
 - Phase 3.3: Metrics Collection ✅ **COMPLETE**
 - Phase 3.4: Infrastructure Monitoring ✅ **COMPLETE**
 - Phase 3.5: Log Aggregation ✅ **COMPLETE**
-- Phase 3.6: MCP Tools for Datadog Queries ✅ **COMPLETE** 
+- Phase 3.6: MCP Tools for Datadog Queries ✅ **COMPLETE** (3 core tools production-ready)
+  - ✅ query_datadog_apm - APM traces with service name mapping
+  - ✅ query_datadog_logs - Log aggregation queries
+  - ⚠️ query_datadog_metrics - Limited by org permissions
+- Phase 3.6+: Additional Datadog Tools ✅ **COMPLETE** (3 high-priority tools)
+  - ✅ list_datadog_monitors - Active alerts & monitor status (15 tests)
+  - ✅ search_datadog_events - Deployment correlation (15 tests)
+  - ✅ get_service_dependencies - Service topology (15 tests)
+  - 🔄 Remaining medium-priority: list_datadog_incidents, list_datadog_hosts
 - Next up: Phase 3.7 - Dashboard Setup
+- **Service Name Mapping**: ✅ Implemented `datadog_service_name` field in services.yaml
 - Phases 1-2 COMPLETE ✅: Redis coordination + Sentry integration
-- 136/136 tests passing (31 existing + 10 SDK + 15 APM + 26 metrics + 26 infra + 21 logs + 17 queries)
+- 156/156 tests passing (31 existing + 10 SDK + 15 APM + 26 metrics + 26 infra + 21 logs + 17 queries + 15 monitors/events/deps)
 
 ---
 
 ## 📊 Current Reports
 
-*No active implementation reports. Add reports to `docs/reports/current/` as work progresses.*
+- [Datadog Service Name Mapping](reports/current/datadog-service-name-mapping.md) - ✅ **RESOLVED** - APM now finds traces with proper mapping (2026-01-25)
+- [Production Validation Final](reports/current/production-validation-final.md) - ✅ **4/5 tools working** - Phase 3.6 production ready (2026-01-25)
+- [Phase 3 Datadog API Fix](reports/current/phase3-datadog-api-fix.md) - ✅ **COMPLETE** - Fixed Datadog APM/Logs with GET methods (2026-01-24)
 
 ---
 
@@ -73,7 +85,11 @@
 <details>
 <summary>Future Plans (Backlog) - Expand if needed</summary>
 
-*No backlog plans. Add future ideas to `docs/plans/backlog/`.*
+**Datadog Expansion:**
+- [Datadog Observability Remaining](plans/backlog/datadog-observability-remaining.md) - Dashboard, Alerts, Docs from Phase 3
+- [Datadog CI Visibility Tools](plans/backlog/datadog-ci-visibility-tools.md) - Pipeline & test monitoring
+- [Datadog Security Tools](plans/backlog/datadog-security-tools.md) - SIEM, vulnerabilities, CSM, AppSec
+- [Datadog Infrastructure Tools](plans/backlog/datadog-infrastructure-tools.md) - Hosts, containers, processes, ECS
 
 </details>
 

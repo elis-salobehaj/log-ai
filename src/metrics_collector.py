@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from collections import defaultdict
 
-from datadog_integration import record_metric, is_configured as is_datadog_configured
+from src.datadog_integration import record_metric, is_configured as is_datadog_configured
 
 logger = logging.getLogger("log-ai.metrics")
 
