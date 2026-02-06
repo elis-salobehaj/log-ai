@@ -70,10 +70,57 @@ class Config(BaseSettings):
     sentry_alert_teams_webhook: Optional[str] = Field(default=None)
     sentry_alert_slack_webhook: Optional[str] = Field(default=None)
     
-    # Datadog Configuration (Optional)
-    dd_api_key: Optional[str] = Field(default=None)
-    dd_app_key: Optional[str] = Field(default=None)
-    dd_site: str = Field(default="datadoghq.com")
+    # Datadog Configuration (Optional - Phase 3)
+    dd_enabled: bool = Field(
+        default=False,
+        description="Enable Datadog APM and metrics collection"
+    )
+    dd_api_key: Optional[str] = Field(
+        default=None,
+        description="Datadog API key for metrics/APM submission"
+    )
+    dd_app_key: Optional[str] = Field(
+        default=None,
+        description="Datadog Application key for API queries"
+    )
+    dd_site: str = Field(
+        default="datadoghq.com",
+        description="Datadog site (datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com)"
+    )
+    dd_service_name: str = Field(
+        default="log-ai-mcp",
+        description="Service name in Datadog APM"
+    )
+    dd_env: str = Field(
+        default="production",
+        description="Environment (production, staging, development)"
+    )
+    dd_version: str = Field(
+        default="1.0.0",
+        description="Application version for release tracking"
+    )
+    dd_agent_host: str = Field(
+        default="localhost",
+        description="Datadog Agent hostname (for StatsD/APM)"
+    )
+    dd_agent_port: int = Field(
+        default=8125,
+        description="DogStatsD port"
+    )
+    dd_trace_agent_port: int = Field(
+        default=8126,
+        description="APM trace agent port"
+    )
+    send_logs_to_datadog: bool = Field(
+        default=False,
+        description="Send Python application logs to Datadog for centralized search"
+    )
+    
+    @computed_field
+    @property
+    def dd_configured(self) -> bool:
+        """Check if Datadog is properly configured"""
+        return bool(self.dd_enabled and self.dd_api_key and self.dd_app_key)
     
     @computed_field
     @property

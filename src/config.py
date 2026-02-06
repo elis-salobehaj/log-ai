@@ -15,6 +15,7 @@ class ServiceConfig(BaseModel):
     path_date_formats: Optional[List[str]] = None
     sentry_service_name: Optional[str] = None  # Maps to existing Sentry project
     sentry_dsn: Optional[str] = None  # Per-service Sentry DSN
+    datadog_service_name: Optional[str] = None  # Maps to Datadog APM service name
     
     def get_sentry_project_id(self) -> Optional[str]:
         """Extract Sentry project ID from DSN"""
